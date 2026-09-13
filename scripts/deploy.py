@@ -171,8 +171,12 @@ class Remote:
     def put_bytes(self, data: bytes, remote_path: str) -> None:
         sftp = self.client.open_sftp()
         try:
-            with sftp.open(remote_path, "wb") as stream:
+            stream = sftp.open(remote_path, "wb")
+            try:
                 stream.write(data)
+                stream.flush()
+            finally:
+                stream.close()
         finally:
             sftp.close()
 
