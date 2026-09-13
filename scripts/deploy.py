@@ -232,6 +232,14 @@ def inspect(remote: Remote, host: str) -> None:
     print(f"nginx={remote.run('systemctl is-active nginx', check=False) or 'inactive'}")
     print(f"postgresql={remote.run('systemctl is-active postgresql', check=False) or 'inactive'}")
     print(f"target_service={remote.run(f'/usr/bin/systemctl is-active {shell(SERVICE_NAME)}', check=False) or 'not-installed'}")
+    print(remote.run(f"/usr/bin/systemctl status {shell(SERVICE_NAME)} --no-pager -l", sudo=True, check=False))
+    print(remote.run(f"/usr/bin/journalctl -u {shell(SERVICE_NAME)} --since '-30 min' --no-pager -n 80", sudo=True, check=False))
+    print(remote.run(
+        f"/usr/bin/readlink -f {shell(CURRENT_ROOT)} 2>/dev/null || true; "
+        f"/usr/bin/stat -c '%A %U:%G %n' {shell(ENV_FILE)} 2>/dev/null || true",
+        sudo=True,
+        check=False,
+    ))
     print(remote.run("/bin/df -h /opt /var | tail -n +1", check=False))
     print(remote.run("/usr/bin/ss -ltn 2>/dev/null | head -40", check=False))
     print(remote.run("/usr/sbin/nginx -t", sudo=True, check=False))
