@@ -1,0 +1,23 @@
+[Unit]
+Description=Classroom Assessment Platform API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=classroom-assessment
+Group=classroom-assessment
+WorkingDirectory=/opt/classroom-assessment-platform/current/backend
+EnvironmentFile=/etc/classroom-assessment-platform/backend.env
+ExecStart=/opt/classroom-assessment-platform/current/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8101
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/classroom-assessment-platform/current/backend
+UMask=027
+
+[Install]
+WantedBy=multi-user.target

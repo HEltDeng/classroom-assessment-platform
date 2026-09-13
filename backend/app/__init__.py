@@ -1,0 +1,2 @@
+"""Classroom Assessment Platform backend."""
+
