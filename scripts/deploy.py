@@ -240,6 +240,20 @@ def inspect(remote: Remote, host: str) -> None:
         sudo=True,
         check=False,
     ))
+    print(remote.run(
+        "if command -v certbot >/dev/null 2>&1; then "
+        "/usr/bin/certbot certificates 2>&1; "
+        "fi",
+        sudo=True,
+        check=False,
+    ))
+    print(remote.run(
+        "if test -f /var/log/letsencrypt/letsencrypt.log; then "
+        "/usr/bin/grep -Ei 'error|failed|challenge|dns|assessment' /var/log/letsencrypt/letsencrypt.log | /usr/bin/tail -n 40; "
+        "fi",
+        sudo=True,
+        check=False,
+    ))
     print(remote.run("/bin/df -h /opt /var | tail -n +1", check=False))
     print(remote.run("/usr/bin/ss -ltn 2>/dev/null | head -40", check=False))
     print(remote.run("/usr/sbin/nginx -t", sudo=True, check=False))
