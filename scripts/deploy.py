@@ -327,6 +327,18 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         "__TLS_KEY__": key,
     })
 
+    # Remove only temporary files created by this deployment helper. This is
+    # intentionally narrower than a general /tmp cleanup and also removes
+    # secret-bearing artifacts left by an interrupted earlier attempt.
+    remote.run(
+        "for path in /tmp/classroom-assessment-upload-*; do "
+        "if test -d \"$path\"; then /bin/rm -rf -- \"$path\"; fi; done; "
+        "for path in /tmp/classroom-assessment-db-*.sql; do "
+        "if test -f \"$path\"; then /bin/rm -f -- \"$path\"; fi; done",
+        sudo=True,
+    )
+    remote.reconnect()
+
     # Keep temporary files private. put_bytes applies umask 077 to every file.
     remote.run(f"/bin/mkdir -m 700 {shell(upload_root)}")
     remote.put_bytes(archive.read_bytes(), upload_root + "/release.tar.gz")

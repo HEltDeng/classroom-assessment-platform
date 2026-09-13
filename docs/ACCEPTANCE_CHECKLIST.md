@@ -34,11 +34,11 @@
 
 | 表面 | 状态 |
 | --- | --- |
-| 独立 systemd 服务/端口/EnvironmentFile | 待部署后验证 |
-| 独立 PostgreSQL 数据库与用户 | 待部署后验证 |
-| 新子域名 HTTP | 待部署后验证 |
-| 新子域名可信 HTTPS 证书 | 待证书签发与外部握手验证 |
-| 原有站点与 API 不受影响 | 部署前后各做一次只读 smoke；不得仅凭配置文件推断 |
+| 独立 systemd 服务/端口/EnvironmentFile | PASS；`classroom-assessment-api.service` active，127.0.0.1:8101，独立 EnvironmentFile |
+| 独立 PostgreSQL 数据库与用户 | PASS；PostgreSQL active，`classroom_assessment` database/role |
+| 新子域名 HTTP | PASS；Nginx HTTP → HTTPS 301，服务器直连验证 |
+| 新子域名可信 HTTPS 证书 | PASS；Let's Encrypt 签发，证书校验握手通过 |
+| 原有站点与 API 不受影响 | PASS；部署前后 `mychangliapp.cn`、`api.mychangliapp.cn/health`、`/ready` 均 200 |
 | 真实老师账号 | PENDING_REAL_ACCOUNT |
 | Android 真机调用 | PENDING_REAL_DEVICE；本对话不开发 Android |
 | Recognition Service 真链路 | PENDING_REAL_SERVICE；本对话只提供标准化接口 |

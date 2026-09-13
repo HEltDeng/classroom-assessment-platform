@@ -40,3 +40,19 @@ Windows 上使用：
 8. 验证服务 active、端口、health、readiness、OpenAPI、Web 首页、SSE、原有官网/API 与新错误日志。
 
 可信 HTTPS 证书必须由该域名的可信 CA 签发并经过客户端握手验证；如果 DNS/ACME 条件不满足，部署报告必须标记 `PENDING_CERTIFICATE`，不能把 HTTP 或自签名证书写成 HTTPS PASS。
+
+## 2026-09-13 测试环境结果
+
+```text
+发布 SHA：以部署命令输出的 `release_sha` 为准
+新域名：assessment.mychangliapp.cn
+DNS：DNSPod A 记录指向 81.71.34.186
+systemd：active
+API 端口：127.0.0.1:8101
+PostgreSQL：active，独立 database/role classroom_assessment
+HTTP：Nginx 301 → HTTPS
+HTTPS：PASS，Let's Encrypt 证书，客户端握手通过
+既有官网/API：部署前后保护检查通过
+```
+
+本机网络的 DNS 测试层可能把域名解析为隔离测试地址；部署验证使用了 DNSPod 控制台记录、Let's Encrypt ACME 成功、服务器 Nginx 及通过证书校验的 `curl --resolve` 握手结果。

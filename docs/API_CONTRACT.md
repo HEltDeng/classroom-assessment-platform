@@ -23,6 +23,13 @@ API_BASE_URL=http://localhost:8000/api/v1
 
 生产环境使用同源 Web 地址作为 `WEB_BASE_URL`，API 地址指向同一站点的 `/api/v1` 路径。不要在客户端写死域名。
 
+当前测试环境示例：
+
+```text
+WEB_BASE_URL=https://assessment.mychangliapp.cn
+API_BASE_URL=https://assessment.mychangliapp.cn/api/v1
+```
+
 除登录和系统健康检查外，接口使用：
 
 ```http
