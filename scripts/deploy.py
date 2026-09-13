@@ -375,7 +375,8 @@ def deploy_legacy(remote: Remote, repo: Path, commit: str, archive: Path, archiv
             timeout=120,
         )
         remote.run(
-            "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/health; "
+            "/usr/bin/curl --fail --silent --show-error --retry 30 --retry-delay 1 "
+            "--retry-connrefused http://127.0.0.1:8101/health; "
             "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/ready",
             sudo=True,
             timeout=60,
@@ -620,7 +621,8 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
             timeout=120,
         )
         remote.run(
-            "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/health; "
+            "/usr/bin/curl --fail --silent --show-error --retry 30 --retry-delay 1 "
+            "--retry-connrefused http://127.0.0.1:8101/health; "
             "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/ready",
             sudo=True,
             timeout=60,
