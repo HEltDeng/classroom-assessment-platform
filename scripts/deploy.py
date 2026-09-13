@@ -8,6 +8,7 @@ database passwords, JWT secrets, or the production EnvironmentFile.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import os
@@ -169,16 +170,19 @@ class Remote:
         return output
 
     def put_bytes(self, data: bytes, remote_path: str) -> None:
-        sftp = self.client.open_sftp()
-        try:
-            stream = sftp.open(remote_path, "wb")
-            try:
-                stream.write(data)
-                stream.flush()
-            finally:
-                stream.close()
-        finally:
-            sftp.close()
+        # The server's SFTP subsystem can drop larger writes. Stream a
+        # base64 payload through a normal SSH channel instead, then verify
+        # the archive hash in the caller before extracting it.
+        stdin, stdout, stderr = self.client.exec_command(
+            f"/usr/bin/base64 --decode > {shell(remote_path)}", timeout=180
+        )
+        stdin.write(base64.b64encode(data).decode("ascii"))
+        stdin.flush()
+        stdin.channel.shutdown_write()
+        error = stderr.read().decode("utf-8", errors="replace").strip()
+        code = stdout.channel.recv_exit_status()
+        if code != 0:
+            raise RemoteError(f"Remote upload failed ({code}): {error[-600:]}")
 
     def install_bytes(self, data: bytes, destination: str, *, mode: str, owner: str, group: str) -> None:
         temporary = f"/tmp/classroom-assessment-{uuid4().hex}"
