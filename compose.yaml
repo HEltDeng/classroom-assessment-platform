@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: classroom-assessment-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: classroom_assessment
+      POSTGRES_USER: classroom
+      POSTGRES_PASSWORD: classroom
+    ports:
+      - "5433:5432"
+    volumes:
+      - classroom_assessment_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U classroom -d classroom_assessment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  classroom_assessment_postgres:
+
