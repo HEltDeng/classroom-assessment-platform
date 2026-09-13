@@ -116,22 +116,25 @@ class RemoteError(RuntimeError):
 
 class Remote:
     def __init__(self) -> None:
-        host = required_env("CLASSROOM_SSH_HOST")
-        port = int(os.environ.pop("CLASSROOM_SSH_PORT", "22"))
-        username = required_env("CLASSROOM_SSH_USER")
-        identity_file = required_env("CLASSROOM_SSH_KEY")
-        key_passphrase = os.environ.pop("CLASSROOM_SSH_KEY_PASSPHRASE", "")
+        self.host = required_env("CLASSROOM_SSH_HOST")
+        self.port = int(os.environ.pop("CLASSROOM_SSH_PORT", "22"))
+        self.username = required_env("CLASSROOM_SSH_USER")
+        self.identity_file = required_env("CLASSROOM_SSH_KEY")
+        self.key_passphrase = os.environ.pop("CLASSROOM_SSH_KEY_PASSPHRASE", "")
         self.sudo_password = required_env("CLASSROOM_SSH_SUDO")
-        self.username = username
+        self.client: paramiko.SSHClient | None = None
+        self._connect()
+
+    def _connect(self) -> None:
         self.client = paramiko.SSHClient()
         self.client.load_system_host_keys()
         self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
         self.client.connect(
-            hostname=host,
-            port=port,
-            username=username,
-            key_filename=identity_file,
-            passphrase=key_passphrase or None,
+            hostname=self.host,
+            port=self.port,
+            username=self.username,
+            key_filename=self.identity_file,
+            passphrase=self.key_passphrase or None,
             look_for_keys=False,
             allow_agent=False,
             timeout=20,
@@ -139,9 +142,16 @@ class Remote:
             banner_timeout=20,
         )
 
+    def reconnect(self) -> None:
+        if self.client is not None:
+            self.client.close()
+        self._connect()
+
     def close(self) -> None:
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
         self.sudo_password = ""
+        self.key_passphrase = ""
 
     def run(
         self,
@@ -155,15 +165,22 @@ class Remote:
         actual = command
         if sudo:
             actual = "/usr/bin/sudo -S -p '' -- /bin/sh -c " + shell(command)
+        if self.client is None:
+            raise RemoteError("Remote connection is closed")
         stdin, stdout, stderr = self.client.exec_command(actual, get_pty=sudo, timeout=timeout)
         if sudo:
             stdin.write(self.sudo_password + "\n")
         if input_text:
             stdin.write(input_text)
         stdin.flush()
+        stdin.channel.shutdown_write()
         output = stdout.read().decode("utf-8", errors="replace").strip()
         error = stderr.read().decode("utf-8", errors="replace").strip()
         code = stdout.channel.recv_exit_status()
+        stdin.close()
+        stdout.close()
+        stderr.close()
+        stdout.channel.close()
         if check and code != 0:
             detail = (error or output).replace(self.sudo_password, "<redacted>")
             raise RemoteError(f"Remote command failed ({code}): {command[:220]} ({detail[-1200:]})")
@@ -173,6 +190,8 @@ class Remote:
         # The server's SFTP subsystem can drop larger writes. Stream a
         # base64 payload through a normal SSH channel instead, then verify
         # the archive hash in the caller before extracting it.
+        if self.client is None:
+            raise RemoteError("Remote connection is closed")
         stdin, stdout, stderr = self.client.exec_command(
             f"/usr/bin/base64 --decode > {shell(remote_path)}", timeout=180
         )
@@ -250,6 +269,10 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
         sudo=True,
     )
 
+    # Package installation and systemd operations can leave the original SSH
+    # connection in a bad state on this host. Start the transfer phase on a
+    # fresh connection before sending the release archive.
+    remote.reconnect()
     upload_root = f"/tmp/classroom-assessment-upload-{uuid4().hex}"
     remote.run(f"/bin/mkdir -m 700 {shell(upload_root)}")
     remote.put_bytes(archive.read_bytes(), upload_root + "/release.tar.gz")
@@ -311,6 +334,7 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
         "ALLOW_DEV_SUBMISSION=false\n"
         f"SEED_DEMO_PASSWORD={seed_password}\n"
     ).encode("utf-8")
+    remote.reconnect()
     remote.install_bytes(env_text, ENV_FILE, mode="640", owner="root", group=SERVICE_USER)
     remote.run(
         f"cd {shell(staging + '/backend')}; set -a; . {shell(ENV_FILE)}; set +a; "
@@ -339,6 +363,7 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
 
     try:
         unit = (repo / "infra" / "systemd" / "classroom-assessment-api.service").read_bytes()
+        remote.reconnect()
         remote.install_bytes(unit, f"/etc/systemd/system/{SERVICE_NAME}", mode="644", owner="root", group="root")
         remote.run(
             f"/bin/systemctl daemon-reload; /bin/systemctl enable {shell(SERVICE_NAME)}; "
@@ -367,6 +392,7 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
     })
     config_path = "/etc/nginx/sites-available/classroom-assessment"
     link_path = "/etc/nginx/sites-enabled/classroom-assessment"
+    remote.reconnect()
     remote.install_bytes(http_config, config_path, mode="644", owner="root", group="root")
     remote.run(f"/bin/ln -sfn {shell(config_path)} {shell(link_path)}; /usr/sbin/nginx -t; /bin/systemctl reload nginx", sudo=True, timeout=120)
 
@@ -395,6 +421,7 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
             "__TLS_CERT__": cert,
             "__TLS_KEY__": key,
         })
+        remote.reconnect()
         remote.install_bytes(https_config, config_path, mode="644", owner="root", group="root")
         remote.run(f"/usr/sbin/nginx -t; /bin/systemctl reload nginx", sudo=True, timeout=120)
         https_status = "PASS"
