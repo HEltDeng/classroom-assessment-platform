@@ -39,6 +39,6 @@
 | 新子域名 HTTP | PASS；Nginx HTTP → HTTPS 301，服务器直连验证 |
 | 新子域名可信 HTTPS 证书 | PASS；Let's Encrypt 签发，证书校验握手通过 |
 | 原有站点与 API 不受影响 | PASS；部署前后 `mychangliapp.cn`、`api.mychangliapp.cn/health`、`/ready` 均 200 |
-| 真实老师账号 | PENDING_REAL_ACCOUNT |
+| 真实老师账号 | PASS；线上测试账号登录 API、`/api/v1/me`、刷新保持登录及 Dashboard/机构/班级/学生/课堂记录页面已验证（2026-09-13） |
 | Android 真机调用 | PENDING_REAL_DEVICE；本对话不开发 Android |
 | Recognition Service 真链路 | PENDING_REAL_SERVICE；本对话只提供标准化接口 |

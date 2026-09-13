@@ -18,6 +18,7 @@ Android Scanner、CameraX、二维码扫描、OMR/OCR、OpenCV、PaddleOCR 和�
 
 ```powershell
 Copy-Item .env.example .env
+# 编辑 .env，设置本机 PostgreSQL 密码、JWT_SECRET 和 SEED_DEMO_PASSWORD
 docker compose up -d postgres
 python -m venv backend/.venv
 & backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
@@ -37,7 +38,7 @@ Pop-Location
 & backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000
 ```
 
-默认演示账号由 `SEED_DEMO_PASSWORD` 控制，用户名为 `teacher@example.com`。生产环境必须设置独立随机 `JWT_SECRET` 和密码，不使用示例值。
+演示账号用户名为 `teacher@example.com`，新账号创建时的密码必须通过本机 `.env` 中的 `SEED_DEMO_PASSWORD` 提供。该变量没有仓库内默认值；生产环境必须设置独立随机 `JWT_SECRET` 和密码。
 
 ## 验证
 

@@ -16,6 +16,8 @@ from app.security import hash_password  # noqa: E402
 
 def main() -> None:
     settings = get_settings()
+    if not settings.seed_demo_password:
+        raise RuntimeError("SEED_DEMO_PASSWORD must be set before running demo seed")
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.email == "teacher@example.com"))
         if user is None:
@@ -37,4 +39,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

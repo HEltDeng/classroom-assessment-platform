@@ -64,7 +64,7 @@ function EmptyState({ title, description, action }: { title: string; description
 
 export function LoginPage({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
   const [email, setEmail] = useState('teacher@example.com')
-  const [password, setPassword] = useState('demo-password')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -83,7 +83,7 @@ export function LoginPage({ onLogin }: { onLogin: (email: string, password: stri
 
   return <div className="login-shell">
     <div className="login-visual"><div className="visual-grid" /><div className="login-visual-copy"><div className="brand-mark brand-mark-large">答</div><span className="eyebrow eyebrow-light">课堂数据工作台</span><h1>让每一次举手，<br /><em>都变成可见的学习反馈。</em></h1><p>从标准答案到实时学情，课堂中的每个关键变化，都有清晰的下一步。</p><div className="visual-pill"><span className="status-dot status-dot-live" />实时课堂已连接</div></div><div className="visual-footer">CLASSROOM ASSESSMENT PLATFORM · V1</div></div>
-    <div className="login-panel"><div className="login-panel-inner"><div className="mobile-login-brand"><div className="brand-mark">答</div><strong>课堂答题台</strong></div><div className="login-heading"><span className="eyebrow">欢迎回来</span><h2>进入你的课堂工作台</h2><p>登录后管理班级、开始答题并查看实时反馈。</p></div><ErrorNotice message={error} /><form className="stack-form" onSubmit={handleSubmit}><label>邮箱地址<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label><button className="button button-primary button-full" disabled={submitting}>{submitting ? '正在进入…' : '进入工作台'}<span>→</span></button></form><div className="demo-hint"><span>演示环境</span><p>已填入演示教师账号，可直接登录体验完整课堂闭环。</p></div></div></div>
+    <div className="login-panel"><div className="login-panel-inner"><div className="mobile-login-brand"><div className="brand-mark">答</div><strong>课堂答题台</strong></div><div className="login-heading"><span className="eyebrow">欢迎回来</span><h2>进入你的课堂工作台</h2><p>登录后管理班级、开始答题并查看实时反馈。</p></div><ErrorNotice message={error} /><form className="stack-form" onSubmit={handleSubmit}><label>邮箱地址<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label><button className="button button-primary button-full" disabled={submitting}>{submitting ? '正在进入…' : '进入工作台'}<span>→</span></button></form><div className="demo-hint"><span>演示环境</span><p>已填入演示教师账号，请输入测试密码登录。</p></div></div></div>
   </div>
 }
 

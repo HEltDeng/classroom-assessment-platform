@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "development-only-change-me"
     access_token_expire_minutes: int = 480
     allow_dev_submission: bool = True
-    seed_demo_password: str = "demo-password"
+    seed_demo_password: str = ""
 
     model_config = SettingsConfigDict(
         env_file=(Path(__file__).resolve().parents[2] / ".env", ".env"),
