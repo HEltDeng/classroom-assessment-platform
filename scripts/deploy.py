@@ -557,12 +557,23 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         owner="root",
         group=SERVICE_USER,
     )
-    remote.run(
-        f"/usr/sbin/runuser -u postgres -- /usr/bin/psql -v ON_ERROR_STOP=1 "
-        f"--dbname=postgres --file {shell(upload_root + '/db.sql')}",
-        sudo=True,
-        timeout=120,
+    db_sql_path = f"/tmp/classroom-assessment-db-{uuid4().hex}.sql"
+    remote.install_remote_file(
+        upload_root + "/db.sql",
+        db_sql_path,
+        mode="640",
+        owner="root",
+        group="postgres",
     )
+    try:
+        remote.run(
+            f"/usr/sbin/runuser -u postgres -- /usr/bin/psql -v ON_ERROR_STOP=1 "
+            f"--dbname=postgres --file {shell(db_sql_path)}",
+            sudo=True,
+            timeout=120,
+        )
+    finally:
+        remote.run(f"/bin/rm -f -- {shell(db_sql_path)}", sudo=True, check=False)
     remote.run(
         f"cd {shell(staging + '/backend')}; set -a; . {shell(ENV_FILE)}; set +a; "
         f"{shell(staging + '/backend/.venv/bin/alembic')} upgrade head; "
