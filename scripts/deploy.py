@@ -193,7 +193,7 @@ class Remote:
         if self.client is None:
             raise RemoteError("Remote connection is closed")
         stdin, stdout, stderr = self.client.exec_command(
-            f"/usr/bin/base64 --decode > {shell(remote_path)}", timeout=180
+            f"umask 077; /usr/bin/base64 --decode > {shell(remote_path)}", timeout=180
         )
         stdin.write(base64.b64encode(data).decode("ascii"))
         stdin.flush()
@@ -203,17 +203,12 @@ class Remote:
         if code != 0:
             raise RemoteError(f"Remote upload failed ({code}): {error[-600:]}")
 
-    def install_bytes(self, data: bytes, destination: str, *, mode: str, owner: str, group: str) -> None:
-        temporary = f"/tmp/classroom-assessment-{uuid4().hex}"
-        self.put_bytes(data, temporary)
-        try:
-            self.run(
-                f"/usr/bin/install -m {shell(mode)} -o {shell(owner)} -g {shell(group)} "
-                f"{shell(temporary)} {shell(destination)}; /bin/rm -f -- {shell(temporary)}",
-                sudo=True,
-            )
-        finally:
-            self.run(f"/bin/rm -f -- {shell(temporary)}", sudo=True, check=False)
+    def install_remote_file(self, source: str, destination: str, *, mode: str, owner: str, group: str) -> None:
+        self.run(
+            f"/usr/bin/install -m {shell(mode)} -o {shell(owner)} -g {shell(group)} "
+            f"{shell(source)} {shell(destination)}",
+            sudo=True,
+        )
 
 
 def check_protected_endpoints() -> None:
@@ -250,7 +245,7 @@ def render_template(repo: Path, filename: str, replacements: dict[str, str]) -> 
     return template.encode("utf-8")
 
 
-def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: str, host: str) -> dict[str, str]:
+def deploy_legacy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: str, host: str) -> dict[str, str]:
     remote.run(
         "need=0; command -v psql >/dev/null 2>&1 || need=1; "
         "python3 -m venv --help >/dev/null 2>&1 || need=1; "
@@ -447,6 +442,243 @@ def deploy(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: 
     }
 
 
+def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sha: str, host: str) -> dict[str, str]:
+    """Deploy one release without feeding privileged commands through stdin.
+
+    The target host can reset SSH transports during apt/systemd operations.
+    Uploading the archive, SQL, environment, systemd unit, and Nginx templates
+    before the first privileged operation makes the sequence restartable. SQL
+    is executed with ``psql --file`` because sudo allocates a PTY and direct
+    psql stdin can otherwise wait for an EOF that never arrives.
+    """
+    release_id = f"{commit[:12]}-{uuid4().hex[:8]}"
+    staging = f"{STAGING_ROOT}/{release_id}"
+    upload_root = f"/tmp/classroom-assessment-upload-{uuid4().hex}"
+    web_root = f"{CURRENT_ROOT}/web/dist"
+    config_path = "/etc/nginx/sites-available/classroom-assessment"
+    link_path = "/etc/nginx/sites-enabled/classroom-assessment"
+
+    db_password = secrets.token_urlsafe(32)
+    escaped_db_password = db_password.replace("'", "''")
+    db_sql = (
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='classroom_assessment') THEN "
+        f"CREATE ROLE classroom_assessment LOGIN PASSWORD '{escaped_db_password}'; "
+        "ELSE ALTER ROLE classroom_assessment WITH LOGIN PASSWORD "
+        f"'{escaped_db_password}'; END IF; END $$;\n"
+        "SELECT 'CREATE DATABASE classroom_assessment OWNER classroom_assessment' "
+        "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='classroom_assessment')\\gexec\n"
+        "ALTER DATABASE classroom_assessment OWNER TO classroom_assessment;\n"
+    ).encode("utf-8")
+
+    jwt_secret = secrets.token_urlsafe(48)
+    seed_password = secrets.token_urlsafe(32)
+    database_url = (
+        "postgresql+psycopg://classroom_assessment:"
+        f"{quote(db_password, safe='')}@127.0.0.1:5432/classroom_assessment"
+    )
+    env_text = (
+        "APP_ENV=production\n"
+        f"DATABASE_URL={database_url}\n"
+        f"WEB_BASE_URL=https://{host}\n"
+        f"API_BASE_URL=https://{host}/api/v1\n"
+        f"JWT_SECRET={jwt_secret}\n"
+        "ACCESS_TOKEN_EXPIRE_MINUTES=480\n"
+        "ALLOW_DEV_SUBMISSION=false\n"
+        f"SEED_DEMO_PASSWORD={seed_password}\n"
+    ).encode("utf-8")
+
+    unit = (repo / "infra" / "systemd" / "classroom-assessment-api.service").read_bytes()
+    http_config = render_template(repo, "classroom-assessment-http.conf", {
+        "__WEB_HOST__": host,
+        "__WEB_ROOT__": web_root,
+    })
+    cert = f"/etc/letsencrypt/live/{host}/fullchain.pem"
+    key = f"/etc/letsencrypt/live/{host}/privkey.pem"
+    https_config = render_template(repo, "classroom-assessment-https.conf", {
+        "__WEB_HOST__": host,
+        "__WEB_ROOT__": web_root,
+        "__TLS_CERT__": cert,
+        "__TLS_KEY__": key,
+    })
+
+    # Keep temporary files private. put_bytes applies umask 077 to every file.
+    remote.run(f"/bin/mkdir -m 700 {shell(upload_root)}")
+    remote.put_bytes(archive.read_bytes(), upload_root + "/release.tar.gz")
+    remote.put_bytes(db_sql, upload_root + "/db.sql")
+    remote.put_bytes(env_text, upload_root + "/backend.env")
+    remote.put_bytes(unit, upload_root + "/classroom-assessment-api.service")
+    remote.put_bytes(http_config, upload_root + "/classroom-assessment-http.conf")
+    remote.put_bytes(https_config, upload_root + "/classroom-assessment-https.conf")
+    remote.run(
+        f"printf '%s  %s\\n' {shell(archive_sha)} release.tar.gz > {shell(upload_root + '/manifest.sha256')}; "
+        f"cd {shell(upload_root)} && /usr/bin/sha256sum -c manifest.sha256"
+    )
+
+    remote.run(
+        "need=0; command -v psql >/dev/null 2>&1 || need=1; "
+        "python3 -m venv --help >/dev/null 2>&1 || need=1; "
+        "if [ \"$need\" -eq 1 ]; then "
+        "export DEBIAN_FRONTEND=noninteractive; /usr/bin/apt-get update; "
+        "/usr/bin/apt-get install -y postgresql postgresql-client python3-venv; fi; "
+        "/bin/systemctl enable --now postgresql",
+        sudo=True,
+        timeout=900,
+    )
+    remote.run(
+        f"if ! /usr/bin/id -u {shell(SERVICE_USER)} >/dev/null 2>&1; then "
+        f"/usr/sbin/useradd --system --home-dir {shell(APP_ROOT)} --shell /usr/sbin/nologin {shell(SERVICE_USER)}; fi; "
+        f"/usr/bin/install -d -m 755 -o root -g root {shell(APP_ROOT)}; "
+        f"/usr/bin/install -d -m 750 -o root -g root {shell(BACKUP_ROOT)} {shell(STAGING_ROOT)} {shell(ENV_DIR)}",
+        sudo=True,
+    )
+
+    # apt/systemctl may invalidate the Paramiko transport.
+    remote.reconnect()
+    remote.run(
+        f"/usr/bin/install -d -m 755 {shell(staging)}; "
+        f"/usr/bin/tar -xzf {shell(upload_root + '/release.tar.gz')} -C {shell(staging)} --strip-components=1; "
+        f"/usr/bin/test -f {shell(staging + '/backend/app/main.py')}; "
+        f"/usr/bin/test -f {shell(staging + '/web/dist/index.html')}; "
+        f"printf '%s\\n' {shell(commit)} > {shell(staging + '/RELEASE_SHA')}",
+        sudo=True,
+    )
+    remote.run(
+        f"/usr/bin/python3 -m venv {shell(staging + '/backend/.venv')}; "
+        f"{shell(staging + '/backend/.venv/bin/pip')} install --disable-pip-version-check --no-cache-dir "
+        f"-r {shell(staging + '/backend/requirements.txt')}",
+        sudo=True,
+        timeout=900,
+    )
+    remote.install_remote_file(
+        upload_root + "/backend.env",
+        ENV_FILE,
+        mode="640",
+        owner="root",
+        group=SERVICE_USER,
+    )
+    remote.run(
+        f"/usr/sbin/runuser -u postgres -- /usr/bin/psql -v ON_ERROR_STOP=1 "
+        f"--dbname=postgres --file {shell(upload_root + '/db.sql')}",
+        sudo=True,
+        timeout=120,
+    )
+    remote.run(
+        f"cd {shell(staging + '/backend')}; set -a; . {shell(ENV_FILE)}; set +a; "
+        f"{shell(staging + '/backend/.venv/bin/alembic')} upgrade head; "
+        f"{shell(staging + '/backend/.venv/bin/python')} {shell(staging + '/scripts/seed_demo.py')}",
+        sudo=True,
+        timeout=300,
+    )
+    remote.run(
+        f"/usr/bin/chown -R {shell(SERVICE_USER + ':' + SERVICE_USER)} {shell(staging)}; "
+        f"/usr/bin/chown -R root:www-data {shell(staging + '/web/dist')}; "
+        f"/usr/bin/find {shell(staging + '/web/dist')} -type d -exec /bin/chmod 755 {{}} +; "
+        f"/usr/bin/find {shell(staging + '/web/dist')} -type f -exec /bin/chmod 644 {{}} +",
+        sudo=True,
+    )
+
+    backup_path = f"{BACKUP_ROOT}/{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{commit[:12]}"
+    had_current = remote.run(
+        f"if test -e {shell(CURRENT_ROOT)}; then echo yes; else echo no; fi", sudo=True
+    ) == "yes"
+    if had_current:
+        remote.run(f"/bin/mv -- {shell(CURRENT_ROOT)} {shell(backup_path)}", sudo=True)
+    remote.run(f"/bin/mv -- {shell(staging)} {shell(CURRENT_ROOT)}", sudo=True)
+
+    try:
+        remote.install_remote_file(
+            upload_root + "/classroom-assessment-api.service",
+            f"/etc/systemd/system/{SERVICE_NAME}",
+            mode="644",
+            owner="root",
+            group="root",
+        )
+        remote.run(
+            f"/bin/systemctl daemon-reload; /bin/systemctl enable {shell(SERVICE_NAME)}; "
+            f"/bin/systemctl restart {shell(SERVICE_NAME)}; /bin/systemctl is-active {shell(SERVICE_NAME)}",
+            sudo=True,
+            timeout=120,
+        )
+        remote.run(
+            "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/health; "
+            "/usr/bin/curl --fail --silent --show-error http://127.0.0.1:8101/ready",
+            sudo=True,
+            timeout=60,
+        )
+    except Exception:
+        remote.run(f"/bin/systemctl stop {shell(SERVICE_NAME)}", sudo=True, check=False)
+        failed_path = APP_ROOT + "/failed-" + release_id
+        remote.run(
+            f"if test -e {shell(CURRENT_ROOT)}; then /bin/mv -- {shell(CURRENT_ROOT)} {shell(failed_path)}; fi",
+            sudo=True,
+            check=False,
+        )
+        if had_current:
+            remote.run(f"/bin/mv -- {shell(backup_path)} {shell(CURRENT_ROOT)}", sudo=True, check=False)
+            remote.run(f"/bin/systemctl start {shell(SERVICE_NAME)}", sudo=True, check=False)
+        raise
+
+    remote.install_remote_file(
+        upload_root + "/classroom-assessment-http.conf",
+        config_path,
+        mode="644",
+        owner="root",
+        group="root",
+    )
+    remote.run(
+        f"/bin/ln -sfn {shell(config_path)} {shell(link_path)}; "
+        f"/usr/sbin/nginx -t; /bin/systemctl reload nginx",
+        sudo=True,
+        timeout=120,
+    )
+
+    https_status = "PENDING_CERTIFICATE"
+    try:
+        remote.run(
+            "if ! command -v certbot >/dev/null 2>&1; then "
+            "export DEBIAN_FRONTEND=noninteractive; /usr/bin/apt-get update; "
+            "/usr/bin/apt-get install -y certbot; fi",
+            sudo=True,
+            timeout=900,
+        )
+        remote.reconnect()
+        remote.run(
+            f"/usr/bin/certbot certonly --webroot --webroot-path {shell(web_root)} "
+            f"--domain {shell(host)} --non-interactive --agree-tos "
+            "--register-unsafely-without-email --keep-until-expiring",
+            sudo=True,
+            timeout=300,
+        )
+        remote.run(f"/usr/bin/test -s {shell(cert)}; /usr/bin/test -s {shell(key)}", sudo=True)
+        remote.install_remote_file(
+            upload_root + "/classroom-assessment-https.conf",
+            config_path,
+            mode="644",
+            owner="root",
+            group="root",
+        )
+        remote.run(f"/usr/sbin/nginx -t; /bin/systemctl reload nginx", sudo=True, timeout=120)
+        https_status = "PASS"
+    except Exception:
+        # Keep the service and HTTP site available for diagnosis. Do not turn
+        # an unverified certificate into a false HTTPS success.
+        https_status = "PENDING_CERTIFICATE"
+
+    remote.run("systemctl is-active mychangli-backend", check=True)
+    remote.run("/usr/sbin/nginx -t", sudo=True)
+    remote.run(f"/bin/rm -rf -- {shell(upload_root)}", sudo=True, check=False)
+    return {
+        "release_sha": commit,
+        "archive_sha256": archive_sha,
+        "service": "active",
+        "postgresql": remote.run("systemctl is-active postgresql", check=False) or "unknown",
+        "https": https_status,
+        "web_host": host,
+        "protected_endpoints": "verified-before-and-after",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deploy the isolated classroom assessment platform")
     parser.add_argument("--action", choices=("inspect", "deploy"), required=True)
@@ -469,7 +701,8 @@ def main() -> int:
         commit = current_commit(repo)
         archive, archive_sha, temporary = make_release_archive(repo, commit)
         try:
-            result = deploy(remote, repo, commit, archive, archive_sha, args.web_host)
+            result = deploy_v2(remote, repo, commit, archive, archive_sha, args.web_host)
+            check_protected_endpoints()
         finally:
             temporary.cleanup()
         print("Classroom assessment deployment: PASS")
