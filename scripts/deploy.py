@@ -462,7 +462,7 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
     finally:
         remote.run(f"/bin/rm -f -- {shell(db_sql_path)}", sudo=True, check=False)
     remote.run(
-        f"cd {shell(staging + '/backend')}; set -a; . {shell(ENV_FILE)}; set +a; "
+        f"set -eu; cd {shell(staging + '/backend')}; set -a; . {shell(ENV_FILE)}; set +a; "
         f"{shell(staging + '/backend/.venv/bin/alembic')} upgrade head; "
         f"{shell(staging + '/backend/.venv/bin/python')} {shell(staging + '/scripts/seed_demo.py')}",
         sudo=True,
