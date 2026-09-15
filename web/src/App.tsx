@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { clearAuth, getMe, getOrganizationId, getToken, login, organizationStorageKey, setOrganizationId } from './api'
+import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { ChalkboardTeacher, ClipboardText, Gear, House, SquaresFour, UsersThree, type IconProps } from '@phosphor-icons/react'
+import { clearAuth, getMe, getToken, login } from './api'
 import type { Me } from './types'
 import {
   ClassesPage,
@@ -10,7 +11,6 @@ import {
   LoginPage,
   NewSessionPage,
   OrganizationsPage,
-  OrganizationSetupPage,
   ResultsPage,
   SessionsPage,
   StudentsPage,
@@ -21,7 +21,7 @@ interface AuthContextValue {
   me: Me | null
   loading: boolean
   refreshProfile: () => Promise<void>
-  signIn: (email: string, password: string) => Promise<void>
+  signIn: (organizationName: string, teacherLoginName: string, password: string) => Promise<void>
   signOut: () => void
 }
 
@@ -40,9 +40,6 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshProfile = async () => {
     const profile = await getMe()
     setMe(profile)
-    const savedOrg = getOrganizationId()
-    const hasSavedOrg = profile.memberships.some((membership) => membership.organization_id === savedOrg)
-    if (!hasSavedOrg && profile.memberships[0]) setOrganizationId(profile.memberships[0].organization_id)
   }
 
   useEffect(() => {
@@ -57,14 +54,13 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     me,
     loading,
     refreshProfile,
-    signIn: async (email, password) => {
-      const result = await login(email, password)
+    signIn: async (organizationName, teacherLoginName, password) => {
+      const result = await login(organizationName, teacherLoginName, password)
       localStorage.setItem('classroom-assessment-access-token', result.access_token)
       await refreshProfile()
     },
     signOut: () => {
       clearAuth()
-      localStorage.removeItem(organizationStorageKey)
       setMe(null)
     },
   }), [loading, me])
@@ -72,51 +68,33 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-const navigation = [
-  { to: '/dashboard', label: '工作台', icon: '⌂' },
-  { to: '/teachers', label: '教师', icon: '♙', adminOnly: true },
-  { to: '/classes', label: '班级', icon: '▦' },
-  { to: '/students', label: '学生库', icon: '◉' },
-  { to: '/sessions', label: '考试', icon: '◷' },
-  { to: '/organizations', label: '系统设置', icon: '⚙', adminOnly: true },
+type NavigationItem = { to: string; label: string; Icon: React.ComponentType<IconProps>; adminOnly?: boolean }
+
+const navigation: NavigationItem[] = [
+  { to: '/dashboard', label: '工作台', Icon: House },
+  { to: '/teachers', label: '教师', Icon: ChalkboardTeacher, adminOnly: true },
+  { to: '/classes', label: '班级', Icon: SquaresFour },
+  { to: '/students', label: '学生库', Icon: UsersThree },
+  { to: '/sessions', label: '考试', Icon: ClipboardText },
+  { to: '/organizations', label: '系统设置', Icon: Gear, adminOnly: true },
 ]
 
 function AppShell() {
   const { me, signOut } = useAuth()
   const location = useLocation()
-  const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
-  const memberships = me?.memberships ?? []
-  const currentOrgId = getOrganizationId() || memberships[0]?.organization_id || ''
-  const currentOrg = memberships.find((membership) => membership.organization_id === currentOrgId)?.organization || memberships[0]?.organization
-  const currentMembership = memberships.find((membership) => membership.organization_id === currentOrgId) || memberships[0]
-  const visibleNavigation = navigation.filter((item) => !item.adminOnly || currentMembership?.role === 'OWNER' || currentMembership?.role === 'ADMIN')
-
-  const chooseOrganization = (organizationId: string) => {
-    setOrganizationId(organizationId)
-    navigate('/dashboard')
-  }
+  const currentOrg = me?.organization
+  const visibleNavigation = navigation.filter((item) => !item.adminOnly || me?.role === 'OWNER' || me?.role === 'ADMIN')
+  const roleLabel = me?.role === 'TEACHER' ? '教师' : '管理员'
 
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
-        <div className="brand-lockup">
-          <div className="brand-mark">答</div>
-          <div>
-            <strong>课堂答题台</strong>
-            <span>实时学情工作台</span>
-          </div>
-        </div>
-        <div className="org-switcher sidebar-org-switcher">
-          <span className="eyebrow">当前机构</span>
-          <select value={currentOrgId} onChange={(event) => chooseOrganization(event.target.value)} aria-label="选择机构">
-            {memberships.map((membership) => <option key={membership.organization_id} value={membership.organization_id}>{membership.organization.name}</option>)}
-          </select>
-        </div>
+        <div className="sidebar-org-name">{currentOrg?.name || '智慧课堂系统'}</div>
         <nav className="main-nav" aria-label="主导航">
           {visibleNavigation.map((item) => (
             <NavLink key={item.to} to={item.to} onClick={() => setMenuOpen(false)} className={({ isActive }) => `nav-item ${isActive ? 'nav-item-active' : ''}`}>
-              <span className="nav-icon">{item.icon}</span><span>{item.label}</span>
+              <item.Icon className="nav-icon" size={21} weight="regular" /><span>{item.label}</span>
             </NavLink>
           ))}
         </nav>
@@ -129,13 +107,12 @@ function AppShell() {
         <header className="topbar">
           <button className="mobile-menu-button" onClick={() => setMenuOpen(true)} aria-label="打开菜单">☰</button>
           <div className="topbar-context">
-            <span className="topbar-kicker">{currentOrg?.name || '未选择机构'}</span>
+            <span className="topbar-kicker">{currentOrg?.name || '智慧课堂系统'}</span>
             <span className="topbar-divider">/</span>
             <span>{navigation.find((item) => location.pathname.startsWith(item.to))?.label || '工作台'}</span>
           </div>
           <div className="topbar-user">
-            <div className="avatar">{me?.display_name.slice(0, 1) || '师'}</div>
-            <div className="user-copy"><strong>{me?.display_name}</strong><span>{currentMembership?.role === 'TEACHER' ? '教师账户' : '机构管理员'}</span></div>
+            <div className="user-copy"><strong>{me?.display_name}</strong><span>{currentOrg?.name} · {roleLabel}</span></div>
             <button className="text-button" onClick={signOut}>退出</button>
           </div>
         </header>
@@ -147,12 +124,9 @@ function AppShell() {
 
 function ProtectedLayout() {
   const { me, loading } = useAuth()
-  const location = useLocation()
   if (loading) return <div className="center-state"><div className="spinner" /><p>正在恢复工作台…</p></div>
   if (!me) return <Navigate to="/login" replace />
-  if (!me.memberships.length && location.pathname !== '/setup') return <Navigate to="/setup" replace />
-  if (!me.memberships.length && location.pathname === '/setup') return <Outlet />
-  if (me.memberships.length && location.pathname === '/setup') return <Navigate to="/dashboard" replace />
+  if (!me.organization_id || !me.teacher_id) return <Navigate to="/login" replace />
   return <AppShell />
 }
 
@@ -165,7 +139,6 @@ function AppRoutes() {
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/setup" element={<OrganizationSetupPage />} />
         <Route path="/organizations" element={<OrganizationsPage />} />
         <Route path="/teachers" element={<TeachersPage />} />
         <Route path="/classes" element={<ClassesPage />} />

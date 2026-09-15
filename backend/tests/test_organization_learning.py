@@ -15,8 +15,8 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.db import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import MemberRole, User  # noqa: E402
-from app.security import hash_password  # noqa: E402
+from app.models import CourseDay, CourseDayStatus, MemberRole, Organization, OrganizationMember, OrganizationSettings, Subject, TimeSlot, User  # noqa: E402
+from app.security import decode_access_token, hash_password  # noqa: E402
 
 
 def workbook_bytes(rows: list[list[str]]) -> bytes:
@@ -30,8 +30,8 @@ def workbook_bytes(rows: list[list[str]]) -> bytes:
     return output.getvalue()
 
 
-def login_headers(client: TestClient, email: str, password: str) -> dict[str, str]:
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+def login_headers(client: TestClient, organization_name: str, login_name: str, password: str) -> dict[str, str]:
+    response = client.post("/api/v1/auth/login", json={"organization_name": organization_name, "teacher_login_name": login_name, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -41,7 +41,14 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
     Base.metadata.create_all(engine)
     testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with testing_session() as db:
-        db.add(User(email="owner@example.com", display_name="机构管理员", password_hash=hash_password("owner-password")))
+        user = User(email="owner@example.com", display_name="机构管理员", password_hash=hash_password("owner-password"))
+        organization = Organization(name="叶芝", code_prefix="YZ")
+        organization.settings = OrganizationSettings(organization_name="叶芝", student_code_label="学生编号")
+        organization.members.append(OrganizationMember(user=user, login_name="owner", role=MemberRole.OWNER))
+        organization.course_days.extend(CourseDay(weekday=weekday, display_name=label, status=CourseDayStatus.ACTIVE) for weekday, label in ((5, "周五"), (6, "周六"), (7, "周日")))
+        organization.time_slots.extend(TimeSlot(slot_code=code, display_name=label, start_time=start, end_time=end) for code, label, start, end in (("A", "A 段", "07:50", "10:00"), ("B", "B 段", "10:20", "12:30"), ("C", "C 段", "13:20", "15:30"), ("D", "D 段", "15:50", "18:00")))
+        organization.subjects.extend(Subject(name=name) for name in ("英语", "数学", "语文", "物理", "化学"))
+        db.add(organization)
         db.commit()
 
     def override_get_db():
@@ -51,18 +58,11 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     try:
-        headers = login_headers(client, "owner@example.com", "owner-password")
-
-        created_organization = client.post(
-            "/api/v1/organizations",
-            headers=headers,
-            json={"name": "叶芝", "code_prefix": "yz"},
-        )
-        assert created_organization.status_code == 201, created_organization.text
-        organization = created_organization.json()
+        headers = login_headers(client, "叶芝", "owner", "owner-password")
+        organization = client.get("/api/v1/me", headers=headers).json()["organization"]
         assert organization["code_prefix"] == "YZ"
         assert organization["student_serial"] == 0
-        headers["X-Organization-Id"] = organization["id"]
+        assert client.post("/api/v1/organizations", headers=headers, json={"name": "不应创建"}).status_code == 403
 
         course_days = client.get("/api/v1/course-days", headers=headers)
         assert course_days.status_code == 200
@@ -75,12 +75,12 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
         teacher_a = client.post(
             "/api/v1/teachers",
             headers=headers,
-            json={"display_name": "王老师", "email": "wang@example.com", "password": "teacher-password"},
+            json={"display_name": "王老师", "login_name": "wang", "email": "wang@example.com", "password": "teacher-password"},
         )
         teacher_b = client.post(
             "/api/v1/teachers",
             headers=headers,
-            json={"display_name": "李老师", "email": "li@example.com", "password": "teacher-password"},
+            json={"display_name": "李老师", "login_name": "li", "email": "li@example.com", "password": "teacher-password"},
         )
         assert teacher_a.status_code == 201, teacher_a.text
         assert teacher_b.status_code == 201, teacher_b.text
@@ -293,5 +293,44 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
         assert template.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         assert client.get("/api/v1/students/export.xlsx", headers=headers).status_code == 200
         assert client.get(f"/api/v1/classes/{class_b_id}/export.xlsx", headers=headers).status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_login_name_is_scoped_to_organization_and_session_cannot_switch() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with testing_session() as db:
+        first_user = User(email="first@example.com", display_name="第一位教师", password_hash=hash_password("same-password"))
+        second_user = User(email="second@example.com", display_name="第二位教师", password_hash=hash_password("same-password"))
+        first_org = Organization(name="第一机构", code_prefix="ONE")
+        second_org = Organization(name="第二机构", code_prefix="TWO")
+        first_org.settings = OrganizationSettings(organization_name="第一机构", student_code_label="学生编号")
+        second_org.settings = OrganizationSettings(organization_name="第二机构", student_code_label="学生编号")
+        first_org.members.append(OrganizationMember(user=first_user, login_name="teacher", role=MemberRole.OWNER))
+        second_org.members.append(OrganizationMember(user=second_user, login_name="teacher", role=MemberRole.OWNER))
+        db.add_all([first_org, second_org])
+        db.commit()
+
+    def override_get_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        first_login = client.post("/api/v1/auth/login", json={"organization_name": "第一机构", "teacher_login_name": "teacher", "password": "same-password"})
+        second_login = client.post("/api/v1/auth/login", json={"organization_name": "第二机构", "teacher_login_name": "teacher", "password": "same-password"})
+        assert first_login.status_code == 200
+        assert second_login.status_code == 200
+        first_token = first_login.json()["access_token"]
+        claims = decode_access_token(first_token)
+        assert claims["organization_id"] == first_login.json()["organization_id"]
+        assert claims["teacher_id"] == first_login.json()["teacher_id"]
+        first_headers = {"Authorization": f"Bearer {first_token}"}
+        assert client.get("/api/v1/me", headers=first_headers).json()["organization"]["name"] == "第一机构"
+        mismatch = client.get("/api/v1/me", headers={**first_headers, "X-Organization-Id": second_login.json()["organization_id"]})
+        assert mismatch.status_code == 403
     finally:
         app.dependency_overrides.clear()

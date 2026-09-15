@@ -48,16 +48,23 @@ class OrganizationOut(APIModel):
 
 class MembershipOut(APIModel):
     organization_id: str
+    login_name: str
     role: MemberRole
     organization: OrganizationOut
 
 
 class MeOut(UserOut):
+    organization_id: str
+    teacher_id: str
+    login_name: str
+    role: MemberRole
+    organization: OrganizationOut
     memberships: list[MembershipOut]
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    organization_name: str = Field(min_length=1, max_length=160)
+    teacher_login_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=200)
 
 
@@ -65,6 +72,12 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+    organization_id: str
+    organization_name: str
+    teacher_id: str
+    teacher_name: str
+    login_name: str
+    role: MemberRole
 
 
 class OrganizationCreate(BaseModel):
@@ -312,14 +325,17 @@ class ResultsOut(BaseModel):
 
 class TeacherCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
-    email: EmailStr
+    login_name: str = Field(min_length=1, max_length=80, pattern="^[A-Za-z0-9._-]+$")
     password: str = Field(min_length=1, max_length=200)
+    role: MemberRole = MemberRole.TEACHER
+    email: EmailStr | None = None
 
 
 class TeacherOut(BaseModel):
     id: str
     user_id: str
     display_name: str
+    login_name: str
     email: EmailStr
     role: MemberRole
     active: bool

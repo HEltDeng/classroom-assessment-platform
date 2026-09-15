@@ -31,11 +31,17 @@ export interface Organization {
 
 export interface Membership {
   organization_id: string
+  login_name: string
   role: 'OWNER' | 'ADMIN' | 'TEACHER'
   organization: Organization
 }
 
 export interface Me extends User {
+  organization_id: string
+  teacher_id: string
+  login_name: string
+  role: 'OWNER' | 'ADMIN' | 'TEACHER'
+  organization: Organization
   memberships: Membership[]
 }
 
@@ -153,6 +159,7 @@ export interface Teacher {
   id: string
   user_id: string
   display_name: string
+  login_name: string
   email: string
   role: 'OWNER' | 'ADMIN' | 'TEACHER'
   active: boolean

@@ -46,7 +46,7 @@ Pop-Location
 & backend/.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000
 ```
 
-演示账号用户名为 `teacher@example.com`，新账号创建时的密码必须通过本机 `.env` 中的 `SEED_DEMO_PASSWORD` 提供。该变量没有仓库内默认值；生产环境必须设置独立随机 `JWT_SECRET` 和密码。
+本地初始化脚本会使用 `.env` 中的 `SEED_DEMO_PASSWORD` 创建一组本地验收数据；该变量没有仓库内默认值。登录统一使用“机构名称 + 教师登录名称 + 密码”，Android Scanner 与 Web 使用同一套机构成员账号。生产环境必须设置独立随机 `JWT_SECRET` 和密码，不能使用本地初始化数据作为生产账号。
 
 ## 验证
 

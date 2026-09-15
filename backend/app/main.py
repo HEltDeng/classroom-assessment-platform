@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from jwt import InvalidTokenError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -95,7 +96,7 @@ from .schemas import (
     TransferStudent,
     TokenOut,
 )
-from .security import create_access_token, hash_password, verify_password
+from .security import create_access_token, decode_access_token, hash_password, verify_password
 
 
 settings = get_settings()
@@ -455,65 +456,73 @@ def ready(db: Session = Depends(get_db)) -> dict[str, str]:
 
 @app.post("/api/v1/auth/login", response_model=TokenOut, tags=["auth"])
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    user = db.scalar(select(User).where(func.lower(User.email) == payload.email.lower()))
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Email or password is incorrect")
-    return {"access_token": create_access_token(user.id), "token_type": "bearer", "user": user}
+    organization_name = payload.organization_name.strip().lower()
+    login_name = payload.teacher_login_name.strip().lower()
+    membership = db.scalar(
+        select(OrganizationMember)
+        .join(Organization, OrganizationMember.organization_id == Organization.id)
+        .join(User, OrganizationMember.user_id == User.id)
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.organization),
+        )
+        .where(
+            func.lower(Organization.name) == organization_name,
+            func.lower(OrganizationMember.login_name) == login_name,
+            Organization.status == OrganizationStatus.ACTIVE,
+            User.is_active.is_(True),
+        )
+    )
+    user = membership.user if membership else None
+    if membership is None or user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="机构名称、老师或密码不正确")
+    return {
+        "access_token": create_access_token(user.id, membership.organization_id, membership.id, membership.role.value),
+        "token_type": "bearer",
+        "user": user,
+        "organization_id": membership.organization_id,
+        "organization_name": membership.organization.name,
+        "teacher_id": membership.id,
+        "teacher_name": user.display_name,
+        "login_name": membership.login_name,
+        "role": membership.role,
+    }
 
 
 @app.get("/api/v1/me", response_model=MeOut, tags=["auth"])
-def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    memberships = db.scalars(
+def me(context: tuple[User, OrganizationMember] = Depends(get_current_membership), db: Session = Depends(get_db)) -> dict[str, Any]:
+    user, membership = context
+    organization = get_org(db, membership.organization_id)
+    membership = db.scalar(
         select(OrganizationMember)
         .options(selectinload(OrganizationMember.organization).selectinload(Organization.settings))
-        .where(OrganizationMember.user_id == user.id)
-        .order_by(OrganizationMember.created_at)
-    ).all()
-    return {"id": user.id, "email": user.email, "display_name": user.display_name, "memberships": memberships}
+        .where(OrganizationMember.id == membership.id)
+    )
+    if membership is None:
+        raise HTTPException(status_code=403, detail="No active organization membership")
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "organization_id": organization.id,
+        "teacher_id": membership.id,
+        "login_name": membership.login_name,
+        "role": membership.role,
+        "organization": organization,
+        "memberships": [membership],
+    }
 
 
 @app.get("/api/v1/organizations", response_model=list[OrganizationOut], tags=["organizations"])
-def list_organizations(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    organizations = db.scalars(
-        select(Organization)
-        .join(OrganizationMember)
-        .options(selectinload(Organization.settings))
-        .where(OrganizationMember.user_id == user.id)
-        .order_by(Organization.created_at)
-    ).all()
-    return [organization_out(organization) for organization in organizations]
+def list_organizations(context: tuple[User, OrganizationMember] = Depends(get_current_membership), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    return [organization_out(get_org(db, org_id_from_context(context)))]
 
 
 @app.post("/api/v1/organizations", response_model=OrganizationOut, status_code=201, tags=["organizations"])
-def create_organization(payload: OrganizationCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    organization_name = payload.name.strip()
-    organization = Organization(name=organization_name, code_prefix=normalize_prefix(payload.code_prefix, organization_name))
-    if not organization.name:
-        raise HTTPException(status_code=422, detail="Organization name is required")
-    organization.settings = OrganizationSettings(
-        organization_name=payload.organization_name or organization.name,
-        logo=payload.logo,
-        student_code_label=payload.student_code_label,
-    )
-    organization.members.append(OrganizationMember(user_id=user.id, role=MemberRole.OWNER))
-    organization.course_days.extend(
-        CourseDay(weekday=weekday, display_name=label)
-        for weekday, label in ((5, "周五"), (6, "周六"), (7, "周日"))
-    )
-    organization.time_slots.extend(
-        TimeSlot(slot_code=code, display_name=label, start_time=start, end_time=end)
-        for code, label, start, end in (
-            ("A", "A 段", "07:50", "10:00"),
-            ("B", "B 段", "10:20", "12:30"),
-            ("C", "C 段", "13:20", "15:30"),
-            ("D", "D 段", "15:50", "18:00"),
-        )
-    )
-    organization.subjects.extend(Subject(name=name) for name in ("英语", "数学", "语文", "物理", "化学"))
-    db.add(organization)
-    db.commit()
-    db.refresh(organization)
-    return organization_out(organization)
+def create_organization(_: OrganizationCreate, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    # Organization provisioning belongs to the future platform-admin surface;
+    # ordinary tenant users must never create a new tenant from the login app.
+    raise HTTPException(status_code=403, detail="机构创建由平台管理后台执行")
 
 
 @app.patch("/api/v1/organizations/{organization_id}/settings", response_model=OrganizationOut, tags=["organizations"])
@@ -554,6 +563,7 @@ def teacher_out(db: Session, membership: OrganizationMember) -> dict[str, Any]:
         "id": membership.id,
         "user_id": membership.user_id,
         "display_name": membership.user.display_name,
+        "login_name": membership.login_name,
         "email": membership.user.email,
         "role": membership.role,
         "active": membership.user.is_active,
@@ -579,26 +589,37 @@ def list_teachers(context: tuple[User, OrganizationMember] = Depends(get_current
 @app.post("/api/v1/teachers", response_model=TeacherOut, status_code=201, tags=["teachers"])
 def create_teacher(payload: TeacherCreate, context: tuple[User, OrganizationMember] = Depends(require_admin), db: Session = Depends(get_db)) -> dict[str, Any]:
     org_id = org_id_from_context(context)
-    email = str(payload.email).lower()
-    user = db.scalar(select(User).where(func.lower(User.email) == email))
+    display_name = payload.display_name.strip()
+    login_name = payload.login_name.strip().lower()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="教师姓名不能为空")
+    if payload.role == MemberRole.OWNER:
+        raise HTTPException(status_code=422, detail="新教师只能设置为教师或机构管理员")
+    if db.scalar(select(OrganizationMember.id).where(OrganizationMember.organization_id == org_id, func.lower(OrganizationMember.login_name) == login_name)):
+        raise HTTPException(status_code=409, detail="该登录名称已经存在")
+    user = None
+    if payload.email:
+        email = str(payload.email).strip().lower()
+        user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is None:
-        user = User(email=email, display_name=payload.display_name.strip(), password_hash=hash_password(payload.password))
+        email = f"teacher-{secrets.token_hex(12)}@accounts.mychangliapp.cn"
+        user = User(email=email, display_name=display_name, password_hash=hash_password(payload.password))
         db.add(user)
         db.flush()
     else:
         existing = db.scalar(select(OrganizationMember).where(OrganizationMember.organization_id == org_id, OrganizationMember.user_id == user.id))
         if existing is not None:
             raise HTTPException(status_code=409, detail="该教师已经在当前机构")
-        user.display_name = payload.display_name.strip()
-    if not user.display_name:
-        raise HTTPException(status_code=422, detail="教师姓名不能为空")
-    membership = OrganizationMember(organization_id=org_id, user_id=user.id, role=MemberRole.TEACHER)
+        if not user.is_active:
+            raise HTTPException(status_code=409, detail="该教师账号已停用")
+        user.display_name = display_name
+    membership = OrganizationMember(organization_id=org_id, user_id=user.id, login_name=login_name, role=payload.role)
     db.add(membership)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="教师账号或邮箱已存在") from exc
+        raise HTTPException(status_code=409, detail="教师登录名称或账号已存在") from exc
     db.refresh(membership)
     return teacher_out(db, membership)
 
@@ -1635,14 +1656,19 @@ def stream(
 ) -> StreamingResponse:
     token = access_token or (credentials.credentials if credentials else None)
     user = user_from_token(db, token)
+    try:
+        claims = decode_access_token(token or "")
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
     membership = db.scalar(
         select(OrganizationMember).where(
+            OrganizationMember.id == claims["teacher_id"],
             OrganizationMember.user_id == user.id,
+            OrganizationMember.organization_id == claims["organization_id"],
             OrganizationMember.organization.has(status=OrganizationStatus.ACTIVE),
-            OrganizationMember.organization_id == select(AssessmentSession.organization_id).where(AssessmentSession.id == session_id).scalar_subquery(),
         )
     )
-    if membership is None:
+    if membership is None or membership.organization_id != db.scalar(select(AssessmentSession.organization_id).where(AssessmentSession.id == session_id)):
         raise HTTPException(status_code=403, detail="Not a member of this session organization")
     session = session_or_404(db, session_id, membership.organization_id)
     ensure_session_access(session, (user, membership))

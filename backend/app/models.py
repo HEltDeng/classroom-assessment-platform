@@ -145,11 +145,15 @@ class User(Base):
 
 class OrganizationMember(Base):
     __tablename__ = "organization_members"
-    __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_org_member"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_member"),
+        UniqueConstraint("organization_id", "login_name", name="uq_org_login_name"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    login_name: Mapped[str] = mapped_column(String(80), nullable=False)
     role: Mapped[MemberRole] = mapped_column(enum_column(MemberRole), default=MemberRole.TEACHER, nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
 

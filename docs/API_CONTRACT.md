@@ -34,11 +34,10 @@ API_BASE_URL=https://assessment.mychangliapp.cn/api/v1
 
 ```http
 Authorization: Bearer <access_token>
-X-Organization-Id: <organization_id>
 Content-Type: application/json
 ```
 
-`X-Organization-Id` 用于组织级接口；服务端会再次校验当前用户的组织成员关系。
+登录签发的 JWT 固定包含 `user_id`、`organization_id`、`teacher_id` 和 `role`。组织上下文由签名会话确定，客户端不能通过请求头切换机构。
 
 登录：
 
@@ -48,7 +47,8 @@ POST /api/v1/auth/login
 
 ```json
 {
-  "email": "teacher@example.com",
+  "organization_name": "叶芝",
+  "teacher_login_name": "rodush",
   "password": "<password>"
 }
 ```
@@ -59,7 +59,13 @@ POST /api/v1/auth/login
 {
   "access_token": "<jwt>",
   "token_type": "bearer",
-  "user": {"id": "...", "email": "...", "display_name": "..."}
+  "user": {"id": "...", "email": "...", "display_name": "..."},
+  "organization_id": "...",
+  "organization_name": "叶芝",
+  "teacher_id": "...",
+  "teacher_name": "Rodush",
+  "login_name": "rodush",
+  "role": "OWNER"
 }
 ```
 
@@ -104,7 +110,7 @@ GET /api/v1/me
 GET /api/v1/organizations
 ```
 
-`/me` 返回 memberships；`/organizations` 返回用户可访问的机构及 `settings.student_code_label`。数据库字段始终使用 `student_code`。
+`/me` 返回当前固定机构、教师成员和角色；`/organizations` 为兼容旧客户端仅返回当前机构。数据库字段始终使用 `student_code`。
 
 ### 获取班级与学生
 

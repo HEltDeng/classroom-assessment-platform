@@ -18,7 +18,7 @@ from app.security import hash_password  # noqa: E402
 
 
 def auth_headers(client: TestClient) -> dict[str, str]:
-    response = client.post("/api/v1/auth/login", json={"email": "teacher@example.com", "password": "test-password"})
+    response = client.post("/api/v1/auth/login", json={"organization_name": "测试机构", "teacher_login_name": "tester", "password": "test-password"})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -31,7 +31,7 @@ def test_complete_classroom_flow() -> None:
         user = User(email="teacher@example.com", display_name="测试教师", password_hash=hash_password("test-password"))
         organization = Organization(name="测试机构")
         organization.settings = OrganizationSettings(organization_name="测试机构", student_code_label="学员编号")
-        organization.members.append(OrganizationMember(user=user, role=MemberRole.OWNER))
+        organization.members.append(OrganizationMember(user=user, login_name="tester", role=MemberRole.OWNER))
         db.add(organization)
         db.commit()
 

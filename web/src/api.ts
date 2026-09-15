@@ -19,6 +19,8 @@ import type {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 
 export const authStorageKey = 'classroom-assessment-access-token'
+// Kept as a compatibility shim for the unmounted legacy settings component;
+// tenant-scoped requests never read or send this value.
 export const organizationStorageKey = 'classroom-assessment-organization-id'
 
 export function getToken(): string | null {
@@ -48,8 +50,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  const organizationId = getOrganizationId()
-  if (organizationId) headers.set('X-Organization-Id', organizationId)
   const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
   if (!response.ok) {
     let message = `请求失败（${response.status}）`
@@ -65,8 +65,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export async function login(email: string, password: string): Promise<{ access_token: string; user: User }> {
-  return request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
+export async function login(organization_name: string, teacher_login_name: string, password: string): Promise<{ access_token: string; token_type: string; user: User; organization_id: string; organization_name: string; teacher_id: string; teacher_name: string; login_name: string; role: 'OWNER' | 'ADMIN' | 'TEACHER' }> {
+  return request('/auth/login', { method: 'POST', body: JSON.stringify({ organization_name, teacher_login_name, password }) })
 }
 
 export function getMe(): Promise<Me> {
@@ -138,7 +138,7 @@ export function getTeachers(): Promise<Teacher[]> {
   return request('/teachers')
 }
 
-export function createTeacher(payload: { display_name: string; email: string; password: string }): Promise<Teacher> {
+export function createTeacher(payload: { display_name: string; login_name: string; password: string; role: 'ADMIN' | 'TEACHER' }): Promise<Teacher> {
   return request('/teachers', { method: 'POST', body: JSON.stringify(payload) })
 }
 
@@ -193,8 +193,6 @@ export function downloadFile(path: string, fallbackName: string): Promise<void> 
     const headers = new Headers()
     const token = getToken()
     if (token) headers.set('Authorization', `Bearer ${token}`)
-    const organizationId = getOrganizationId()
-    if (organizationId) headers.set('X-Organization-Id', organizationId)
     const response = await fetch(`${API_BASE_URL}${path}`, { headers })
     if (!response.ok) throw new APIError(response.status, `导出失败（${response.status}）`)
     const blob = await response.blob()

@@ -38,22 +38,32 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: str, organization_id: str, teacher_id: str, role: str) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
+        "organization_id": organization_id,
+        "teacher_id": teacher_id,
+        "role": role,
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def decode_access_token(token: str) -> str:
+def decode_access_token(token: str) -> dict[str, str]:
     settings = get_settings()
     payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
     user_id = payload.get("sub")
-    if not user_id or not isinstance(user_id, str):
-        raise jwt.InvalidTokenError("missing subject")
-    return user_id
-
+    organization_id = payload.get("organization_id")
+    teacher_id = payload.get("teacher_id")
+    role = payload.get("role")
+    if not all(isinstance(value, str) and value for value in (user_id, organization_id, teacher_id, role)):
+        raise jwt.InvalidTokenError("missing tenant claims")
+    return {
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "teacher_id": teacher_id,
+        "role": role,
+    }
