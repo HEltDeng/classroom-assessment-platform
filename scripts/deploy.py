@@ -204,7 +204,13 @@ class Remote:
         stdin, stdout, stderr = self.client.exec_command(
             f"umask 077; /usr/bin/base64 --decode > {shell(remote_path)}", timeout=180
         )
-        stdin.write(base64.b64encode(data).decode("ascii"))
+        encoded = base64.b64encode(data).decode("ascii")
+        # Keep each write below the remote SSH channel's reliable window. A
+        # single large ChannelFile.write can reset the session on this host;
+        # small writes preserve the stdin transport and keep secrets out of
+        # command arguments and process listings.
+        for offset in range(0, len(encoded), 4 * 1024):
+            stdin.write(encoded[offset : offset + 4 * 1024])
         stdin.flush()
         stdin.channel.shutdown_write()
         error = stderr.read().decode("utf-8", errors="replace").strip()
