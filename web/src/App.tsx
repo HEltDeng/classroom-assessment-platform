@@ -130,6 +130,12 @@ function ProtectedLayout() {
   return <AppShell />
 }
 
+function AdminOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { me } = useAuth()
+  if (me?.role !== 'OWNER' && me?.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
+  return <>{children}</>
+}
+
 function AppRoutes() {
   const { me, loading, signIn } = useAuth()
   if (loading) return <div className="center-state"><div className="spinner" /><p>正在加载…</p></div>
@@ -139,8 +145,8 @@ function AppRoutes() {
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/organizations" element={<OrganizationsPage />} />
-        <Route path="/teachers" element={<TeachersPage />} />
+        <Route path="/organizations" element={<AdminOnlyRoute><OrganizationsPage /></AdminOnlyRoute>} />
+        <Route path="/teachers" element={<AdminOnlyRoute><TeachersPage /></AdminOnlyRoute>} />
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/classes/:classId" element={<ClassDetailPage />} />
         <Route path="/students" element={<StudentsPage />} />
