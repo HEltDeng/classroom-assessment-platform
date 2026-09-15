@@ -164,7 +164,16 @@ class Remote:
     ) -> str:
         actual = command
         if sudo:
-            actual = "/usr/bin/sudo -S -p '' -- /bin/sh -c " + shell(command)
+            sudo_command = "/usr/bin/sudo -S -p '' -- /bin/sh -c " + shell(command)
+            # The PTY is required by sudo on this host, but its default echo
+            # mode would reveal the password written to stdin. Disable echo
+            # for the credential exchange and restore it before the channel
+            # exits.
+            actual = (
+                "/bin/stty -echo 2>/dev/null; "
+                + sudo_command
+                + "; status=$?; /bin/stty echo 2>/dev/null; exit $status"
+            )
         if self.client is None:
             raise RemoteError("Remote connection is closed")
         stdin, stdout, stderr = self.client.exec_command(actual, get_pty=sudo, timeout=timeout)
@@ -387,6 +396,47 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         sudo=True,
         timeout=900,
     )
+    # Snapshot every rollback input before replacing the live EnvironmentFile
+    # or running migrations. The database dump is created by the local
+    # postgres peer account and then installed into the root-owned backup
+    # directory, so no database password is ever printed or stored in the
+    # deployment package.
+    predeploy_backup_path = (
+        f"{BACKUP_ROOT}/predeploy-"
+        f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-"
+        f"{uuid4().hex[:8]}"
+    )
+    db_backup_tmp = f"/tmp/classroom-assessment-predeploy-db-{uuid4().hex}.dump"
+    remote.run(
+        "set -eu; "
+        f"/usr/bin/install -d -m 750 -o root -g root {shell(predeploy_backup_path)}; "
+        f"if test -e {shell(CURRENT_ROOT)}; then "
+        f"/bin/cp -a -- {shell(CURRENT_ROOT)} {shell(predeploy_backup_path + '/release')}; "
+        "fi; "
+        f"if test -f {shell(ENV_FILE)}; then "
+        f"/usr/bin/install -m 640 -o root -g root {shell(ENV_FILE)} "
+        f"{shell(predeploy_backup_path + '/backend.env')}; "
+        "fi; "
+        f"if test -e {shell(link_path)}; then "
+        f"/bin/cp -aL -- {shell(link_path)} "
+        f"{shell(predeploy_backup_path + '/classroom-assessment.nginx')}; "
+        "fi; "
+        f"if test -f {shell(CURRENT_ROOT + '/RELEASE_SHA')}; then "
+        f"/bin/cp -- {shell(CURRENT_ROOT + '/RELEASE_SHA')} "
+        f"{shell(predeploy_backup_path + '/PRE_DEPLOY_COMMIT')}; "
+        "else "
+        f"/bin/printf '%s\\n' unknown > {shell(predeploy_backup_path + '/PRE_DEPLOY_COMMIT')}; "
+        "fi; "
+        f"trap '/bin/rm -f -- {shell(db_backup_tmp)}' EXIT; "
+        f"/usr/sbin/runuser -u postgres -- /usr/bin/pg_dump --format=custom "
+        f"--file {shell(db_backup_tmp)} classroom_assessment; "
+        f"/usr/bin/install -m 640 -o root -g root {shell(db_backup_tmp)} "
+        f"{shell(predeploy_backup_path + '/classroom_assessment.pg_dump')}; "
+        f"/usr/bin/sha256sum {shell(predeploy_backup_path + '/classroom_assessment.pg_dump')} "
+        f"> {shell(predeploy_backup_path + '/MANIFEST.sha256')}",
+        sudo=True,
+        timeout=300,
+    )
     remote.install_remote_file(
         upload_root + "/backend.env",
         ENV_FILE,
@@ -426,12 +476,12 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         sudo=True,
     )
 
-    backup_path = f"{BACKUP_ROOT}/{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{commit[:12]}"
+    release_backup_path = f"{BACKUP_ROOT}/{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{commit[:12]}"
     had_current = remote.run(
         f"if test -e {shell(CURRENT_ROOT)}; then echo yes; else echo no; fi", sudo=True
     ) == "yes"
     if had_current:
-        remote.run(f"/bin/mv -- {shell(CURRENT_ROOT)} {shell(backup_path)}", sudo=True)
+        remote.run(f"/bin/mv -- {shell(CURRENT_ROOT)} {shell(release_backup_path)}", sudo=True)
     remote.run(f"/bin/mv -- {shell(staging)} {shell(CURRENT_ROOT)}", sudo=True)
 
     try:
@@ -464,7 +514,7 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
             check=False,
         )
         if had_current:
-            remote.run(f"/bin/mv -- {shell(backup_path)} {shell(CURRENT_ROOT)}", sudo=True, check=False)
+            remote.run(f"/bin/mv -- {shell(release_backup_path)} {shell(CURRENT_ROOT)}", sudo=True, check=False)
             remote.run(f"/bin/systemctl start {shell(SERVICE_NAME)}", sudo=True, check=False)
         raise
 
@@ -520,6 +570,8 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
     return {
         "release_sha": commit,
         "archive_sha256": archive_sha,
+        "predeploy_backup": predeploy_backup_path,
+        "rollback_release": release_backup_path if had_current else "none",
         "service": "active",
         "postgresql": remote.run("systemctl is-active postgresql", check=False) or "unknown",
         "https": https_status,
