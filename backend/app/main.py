@@ -1153,9 +1153,18 @@ def transfer_student(
 
 
 @app.get("/api/v1/students", response_model=list[StudentOut], tags=["students"])
-def list_students(search: str | None = Query(default=None, max_length=120), context: tuple[User, OrganizationMember] = Depends(get_current_membership), db: Session = Depends(get_db)) -> list[Student]:
-    query = select(Student).where(Student.organization_id == org_id_from_context(context))
-    if context[1].role == MemberRole.TEACHER:
+def list_students(
+    search: str | None = Query(default=None, max_length=120),
+    class_id: str | None = Query(default=None),
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> list[Student]:
+    org_id = org_id_from_context(context)
+    if class_id:
+        target_class = class_or_404(db, class_id, org_id)
+        ensure_class_access(target_class, context)
+    query = select(Student).where(Student.organization_id == org_id)
+    if context[1].role == MemberRole.TEACHER and not class_id:
         query = query.join(ClassEnrollment).join(ClassModel).where(
             ClassEnrollment.left_at.is_(None),
             ClassModel.teacher_id == context[1].id,

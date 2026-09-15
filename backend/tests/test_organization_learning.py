@@ -152,6 +152,13 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
         students = client.get("/api/v1/students", headers=headers).json()
         codes = sorted((student["student_code"] for student in students), key=lambda code: int(code[2:]))
         assert codes == [f"YZ{index:04d}" for index in range(1, 21)]
+        unassigned = client.post("/api/v1/students", headers=headers, json={"name": "待加入学生", "school_stage": "MIDDLE"})
+        assert unassigned.status_code == 201, unassigned.text
+        teacher_headers = login_headers(client, "叶芝", "wang", "teacher-password")
+        assert unassigned.json()["id"] not in {student["id"] for student in client.get("/api/v1/students", headers=teacher_headers).json()}
+        selectable = client.get(f"/api/v1/students?class_id={class_a_id}", headers=teacher_headers)
+        assert selectable.status_code == 200, selectable.text
+        assert unassigned.json()["id"] in {student["id"] for student in selectable.json()}
         student_by_name = {student["name"]: student for student in students}
         student_one = student_by_name["学生01"]
         student_two = student_by_name["学生02"]
@@ -190,7 +197,7 @@ def test_organization_student_master_import_membership_and_exam_flow() -> None:
         )
         assert reused.status_code == 200, reused.text
         assert reused.json()["created_count"] == 0
-        assert len(client.get("/api/v1/students", headers=headers).json()) == 20
+        assert len(client.get("/api/v1/students", headers=headers).json()) == 21
 
         duplicate_one = client.post("/api/v1/students", headers=headers, json={"name": "张三", "school_stage": "MIDDLE"})
         duplicate_two = client.post("/api/v1/students", headers=headers, json={"name": "张三", "school_stage": "MIDDLE"})

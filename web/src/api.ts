@@ -101,8 +101,11 @@ export function updateClass(id: string, payload: { name?: string; teacher_id?: s
   return request(`/classes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) })
 }
 
-export function getStudents(search = ''): Promise<Student[]> {
-  const query = search ? `?search=${encodeURIComponent(search)}` : ''
+export function getStudents(search = '', classId?: string): Promise<Student[]> {
+  const params = new URLSearchParams()
+  if (search) params.set('search', search)
+  if (classId) params.set('class_id', classId)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return request(`/students${query}`)
 }
 
