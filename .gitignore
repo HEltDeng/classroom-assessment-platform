@@ -21,6 +21,7 @@ npm-debug.log*
 *.sqlite
 *.sqlite3
 *.log
+backend/data/
 coverage.xml
 htmlcov/
 

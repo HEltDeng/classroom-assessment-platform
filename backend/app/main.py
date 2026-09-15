@@ -6,11 +6,13 @@ import io
 import re
 import secrets
 from copy import copy
+from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from jwt import InvalidTokenError
@@ -37,9 +39,13 @@ from .models import (
     OrganizationStatus,
     Question,
     QRCodeStatus,
+    ScanRecord,
+    ScanStatus,
     SchoolStage,
     SessionParticipant,
     SessionStatus,
+    ScannerSession,
+    ScannerSessionStatus,
     Student,
     StudentAnswer,
     StudentStatus,
@@ -72,8 +78,11 @@ from .schemas import (
     QRTokenOut,
     RecognitionResultCreate,
     ResultsOut,
+    ScanOut,
     SessionCreate,
     SessionOut,
+    ScannerAssessmentOut,
+    ScannerSessionOut,
     StudentImportConfirm,
     StudentImportItem,
     StudentImportMatch,
@@ -103,7 +112,7 @@ settings = get_settings()
 settings.validate_runtime()
 
 app = FastAPI(
-    title="Classroom Assessment Platform API",
+    title="智慧课堂系统 API",
     version="0.1.0",
     description="Organization-aware classroom assessment, submissions, results and SSE events.",
     docs_url="/docs",
@@ -238,6 +247,142 @@ def session_or_404(db: Session, session_id: str, org_id: str) -> AssessmentSessi
     if session is None:
         raise HTTPException(status_code=404, detail="Assessment session not found")
     return session
+
+
+def scanner_session_or_404(db: Session, scanner_session_id: str, org_id: str) -> ScannerSession:
+    scanner_session = db.scalar(
+        select(ScannerSession)
+        .options(
+            selectinload(ScannerSession.assessment_session).selectinload(AssessmentSession.class_model),
+            selectinload(ScannerSession.opened_by_user),
+            selectinload(ScannerSession.opened_by_member),
+        )
+        .where(ScannerSession.id == scanner_session_id, ScannerSession.organization_id == org_id)
+    )
+    if scanner_session is None:
+        raise HTTPException(status_code=404, detail="Scanner session not found")
+    return scanner_session
+
+
+def scanner_session_out(scanner_session: ScannerSession) -> dict[str, Any]:
+    return {
+        "id": scanner_session.id,
+        "organization_id": scanner_session.organization_id,
+        "assessment_session_id": scanner_session.assessment_session_id,
+        "opened_by": scanner_session.opened_by_user.display_name,
+        "opened_by_member_id": scanner_session.opened_by_member_id,
+        "status": scanner_session.status,
+        "opened_at": scanner_session.opened_at,
+        "closed_at": scanner_session.closed_at,
+    }
+
+
+def scanner_assessment_out(db: Session, session: AssessmentSession) -> dict[str, Any]:
+    submitted_count = db.scalar(
+        select(func.count(Submission.id)).where(Submission.session_id == session.id)
+    ) or 0
+    participant_count = db.scalar(
+        select(func.count(SessionParticipant.id)).where(SessionParticipant.session_id == session.id)
+    ) or 0
+    return {
+        "id": session.id,
+        "organization_id": session.organization_id,
+        "class_id": session.class_id,
+        "class_name": session.class_model.name,
+        "name": session.name,
+        "status": session.status,
+        "question_count": session.question_count,
+        "submitted_count": submitted_count,
+        "participant_count": participant_count,
+    }
+
+
+def get_or_create_scanner_session(
+    db: Session,
+    session: AssessmentSession,
+    context: tuple[User, OrganizationMember],
+) -> ScannerSession:
+    user, membership = context
+    existing = db.scalar(
+        select(ScannerSession).where(
+            ScannerSession.organization_id == membership.organization_id,
+            ScannerSession.assessment_session_id == session.id,
+            ScannerSession.opened_by_member_id == membership.id,
+        )
+    )
+    if existing is not None:
+        if existing.status != ScannerSessionStatus.OPEN:
+            existing.status = ScannerSessionStatus.OPEN
+            existing.closed_at = None
+            db.commit()
+        return scanner_session_or_404(db, existing.id, membership.organization_id)
+
+    scanner_session = ScannerSession(
+        organization_id=membership.organization_id,
+        assessment_session_id=session.id,
+        opened_by_user_id=user.id,
+        opened_by_member_id=membership.id,
+        status=ScannerSessionStatus.OPEN,
+    )
+    db.add(scanner_session)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(
+            select(ScannerSession).where(
+                ScannerSession.organization_id == membership.organization_id,
+                ScannerSession.assessment_session_id == session.id,
+                ScannerSession.opened_by_member_id == membership.id,
+            )
+        )
+        if existing is None:
+            raise
+        scanner_session = existing
+    return scanner_session_or_404(db, scanner_session.id, membership.organization_id)
+
+
+def scan_storage_root() -> Path:
+    configured = Path(settings.scan_storage_dir)
+    return configured if configured.is_absolute() else Path(__file__).resolve().parents[1] / configured
+
+
+def persist_scan_image(image: UploadFile, destination: Path) -> tuple[str, int]:
+    content_type = (image.content_type or "").lower()
+    if content_type not in {"image/jpeg", "image/jpg", "application/octet-stream"}:
+        raise HTTPException(status_code=415, detail="扫描图片必须是 JPEG 格式")
+    content = image.file.read(settings.max_scan_image_bytes + 1)
+    if len(content) > settings.max_scan_image_bytes:
+        raise HTTPException(status_code=413, detail="扫描图片不能超过 15 MB")
+    if not content or not content.startswith(b"\xff\xd8"):
+        raise HTTPException(status_code=422, detail="扫描图片无效，请重新拍摄")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(content)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return hashlib.sha256(content).hexdigest(), len(content)
+
+
+def scan_out(scan: ScanRecord) -> dict[str, Any]:
+    session = scan.assessment_session
+    student = scan.student
+    return {
+        "server_scan_id": scan.id,
+        "session_id": scan.assessment_session_id,
+        "scan_session_id": scan.scanner_session_id,
+        "class_id": session.class_id,
+        "client_capture_id": scan.client_capture_id,
+        "status": scan.status,
+        "request_id": scan.request_id,
+        "student_name": student.name if student else None,
+        "student_code": student.student_code if student else None,
+        "page_type": scan.page_type,
+        "created_at": scan.created_at,
+        "processed_at": scan.processed_at,
+    }
 
 
 def ensure_session_access(session: AssessmentSession, context: tuple[User, OrganizationMember]) -> None:
@@ -742,6 +887,29 @@ def list_classes(context: tuple[User, OrganizationMember] = Depends(get_current_
         .order_by(ClassModel.status, ClassModel.name)
     ).all()
     return [class_out(db, class_model) for class_model in classes]
+
+
+@app.get("/api/v1/classes/{class_id}/sessions", response_model=list[ScannerAssessmentOut], tags=["scanner"])
+def list_scannable_sessions(
+    class_id: str,
+    status: SessionStatus | None = Query(default=SessionStatus.ACTIVE),
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    class_model = class_or_404(db, class_id, org_id_from_context(context))
+    ensure_class_access(class_model, context)
+    query = (
+        select(AssessmentSession)
+        .options(selectinload(AssessmentSession.class_model))
+        .where(
+            AssessmentSession.organization_id == org_id_from_context(context),
+            AssessmentSession.class_id == class_model.id,
+        )
+    )
+    if status is not None:
+        query = query.where(AssessmentSession.status == status)
+    sessions = db.scalars(query.order_by(AssessmentSession.created_at.desc())).all()
+    return [scanner_assessment_out(db, session) for session in sessions]
 
 
 @app.post("/api/v1/classes", response_model=ClassOut, status_code=201, tags=["classes"])
@@ -1388,6 +1556,180 @@ def archive_session(session_id: str, context: tuple[User, OrganizationMember] = 
     return session_out(session_or_404(db, session.id, session.organization_id))
 
 
+@app.post("/api/v1/sessions/{session_id}/scan-session", response_model=ScannerSessionOut, tags=["scanner"])
+def open_scan_session(
+    session_id: str,
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    session = session_or_404(db, session_id, org_id_from_context(context))
+    ensure_session_access(session, context)
+    if session.status != SessionStatus.ACTIVE:
+        raise HTTPException(status_code=409, detail="Only an ACTIVE test can be scanned")
+    return scanner_session_out(get_or_create_scanner_session(db, session, context))
+
+
+@app.get("/api/v1/sessions/{session_id}/scan-session", response_model=ScannerSessionOut, tags=["scanner"])
+def get_scan_session(
+    session_id: str,
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    session = session_or_404(db, session_id, org_id_from_context(context))
+    ensure_session_access(session, context)
+    scanner_session = db.scalar(
+        select(ScannerSession)
+        .options(selectinload(ScannerSession.opened_by_user))
+        .where(
+            ScannerSession.organization_id == org_id_from_context(context),
+            ScannerSession.assessment_session_id == session.id,
+            ScannerSession.opened_by_member_id == context[1].id,
+        )
+    )
+    if scanner_session is None:
+        raise HTTPException(status_code=404, detail="Scanner session not found")
+    return scanner_session_out(scanner_session_or_404(db, scanner_session.id, org_id_from_context(context)))
+
+
+@app.post("/api/v1/scans", response_model=ScanOut, status_code=201, tags=["scanner"])
+def upload_scan(
+    session_id: str = Form(...),
+    scan_session_id: str = Form(...),
+    page_token: str = Form(..., min_length=1, max_length=256),
+    client_capture_id: str = Form(..., min_length=1, max_length=64),
+    image: UploadFile = File(...),
+    page_type: str = Form(default="ANSWER_SHEET", min_length=1, max_length=80),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    org_id = org_id_from_context(context)
+    try:
+        canonical_capture_id = str(UUID(client_capture_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="client_capture_id 必须是 UUID") from exc
+    if idempotency_key is None or idempotency_key.strip().lower() != canonical_capture_id:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 必须与 client_capture_id 一致")
+    normalized_page_token = page_token.strip()
+    page_token_hash = hashlib.sha256(normalized_page_token.encode("utf-8")).hexdigest()
+
+    session = session_or_404(db, session_id, org_id)
+    ensure_session_access(session, context)
+    if session.status != SessionStatus.ACTIVE:
+        raise HTTPException(status_code=409, detail="Only an ACTIVE test accepts scans")
+    scanner_session = scanner_session_or_404(db, scan_session_id, org_id)
+    if scanner_session.assessment_session_id != session.id:
+        raise HTTPException(status_code=409, detail="扫描会话与测试不匹配")
+    if scanner_session.opened_by_member_id != context[1].id:
+        raise HTTPException(status_code=403, detail="当前账号不能使用此扫描会话")
+    if scanner_session.status != ScannerSessionStatus.OPEN:
+        raise HTTPException(status_code=409, detail="扫描会话已关闭")
+
+    existing = db.scalar(
+        select(ScanRecord)
+        .options(
+            selectinload(ScanRecord.assessment_session).selectinload(AssessmentSession.class_model),
+            selectinload(ScanRecord.student),
+        )
+        .where(ScanRecord.organization_id == org_id, ScanRecord.client_capture_id == canonical_capture_id)
+    )
+    if existing is not None:
+        if (
+            existing.assessment_session_id != session.id
+            or existing.scanner_session_id != scanner_session.id
+            or existing.page_token_hash != page_token_hash
+        ):
+            raise HTTPException(status_code=409, detail="client_capture_id 已绑定其他扫描请求")
+        return scan_out(existing)
+
+    scan_id = str(uuid4())
+    destination = scan_storage_root() / org_id / session.id / f"{scan_id}.jpg"
+    image_sha256, image_size = persist_scan_image(image, destination)
+    student = None
+    qr_code = db.scalar(
+        select(StudentQRCode)
+        .options(selectinload(StudentQRCode.student))
+        .where(StudentQRCode.token_hash == page_token_hash, StudentQRCode.status == QRCodeStatus.ACTIVE)
+    )
+    if qr_code and qr_code.student.organization_id == org_id:
+        participant = db.scalar(
+            select(SessionParticipant).where(
+                SessionParticipant.session_id == session.id,
+                SessionParticipant.student_id == qr_code.student_id,
+            )
+        )
+        if participant is not None:
+            student = qr_code.student
+
+    scan = ScanRecord(
+        id=scan_id,
+        organization_id=org_id,
+        assessment_session_id=session.id,
+        scanner_session_id=scanner_session.id,
+        uploaded_by_user_id=context[0].id,
+        uploaded_by_member_id=context[1].id,
+        client_capture_id=canonical_capture_id,
+        page_token_hash=page_token_hash,
+        image_path=str(destination),
+        image_sha256=image_sha256,
+        image_size_bytes=image_size,
+        page_type=page_type.strip() or "ANSWER_SHEET",
+        student_id=student.id if student else None,
+        status=ScanStatus.PROCESSING,
+        request_id=(request_id or str(uuid4())).strip()[:120],
+    )
+    db.add(scan)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        destination.unlink(missing_ok=True)
+        existing = db.scalar(
+            select(ScanRecord)
+            .options(
+                selectinload(ScanRecord.assessment_session).selectinload(AssessmentSession.class_model),
+                selectinload(ScanRecord.student),
+            )
+            .where(ScanRecord.organization_id == org_id, ScanRecord.client_capture_id == canonical_capture_id)
+        )
+        if existing is None:
+            raise HTTPException(status_code=409, detail="扫描回执创建冲突，请重试") from exc
+        if (
+            existing.assessment_session_id != session.id
+            or existing.scanner_session_id != scanner_session.id
+            or existing.page_token_hash != page_token_hash
+        ):
+            raise HTTPException(status_code=409, detail="client_capture_id 已绑定其他扫描请求") from exc
+        return scan_out(existing)
+    db.refresh(scan)
+    event_broker.publish(
+        session.id,
+        {"kind": "scan.received", "session_id": session.id, "scan_id": scan.id, "status": scan.status},
+    )
+    return scan_out(scan)
+
+
+@app.get("/api/v1/scans/{server_scan_id}", response_model=ScanOut, tags=["scanner"])
+def get_scan_status(
+    server_scan_id: str,
+    context: tuple[User, OrganizationMember] = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    scan = db.scalar(
+        select(ScanRecord)
+        .options(
+            selectinload(ScanRecord.assessment_session).selectinload(AssessmentSession.class_model),
+            selectinload(ScanRecord.student),
+        )
+        .where(ScanRecord.id == server_scan_id, ScanRecord.organization_id == org_id_from_context(context))
+    )
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    ensure_session_access(scan.assessment_session, context)
+    return scan_out(scan)
+
+
 @app.post("/api/v1/sessions/{session_id}/submissions", response_model=SubmissionOut, tags=["submissions"])
 def submit_answers(session_id: str, payload: SubmissionCreate, context: tuple[User, OrganizationMember] = Depends(get_current_membership), db: Session = Depends(get_db)) -> dict[str, Any]:
     session = session_or_404(db, session_id, org_id_from_context(context))
@@ -1418,6 +1760,17 @@ def submit_recognition_result(session_id: str, payload: RecognitionResultCreate,
         raise HTTPException(status_code=422, detail="Recognition result identity does not match a student")
     session = session_or_404(db, session_id, org_id)
     ensure_session_access(session, context)
+    scan = None
+    if payload.scan_id:
+        scan = db.scalar(
+            select(ScanRecord).where(
+                ScanRecord.id == payload.scan_id,
+                ScanRecord.organization_id == org_id,
+                ScanRecord.assessment_session_id == session.id,
+            )
+        )
+        if scan is None:
+            raise HTTPException(status_code=404, detail="Scan not found in this test")
     submission_payload = SubmissionCreate(
         student_id=student.id,
         answers=payload.answers,
@@ -1428,6 +1781,13 @@ def submit_recognition_result(session_id: str, payload: RecognitionResultCreate,
         confidence=payload.confidence,
     )
     submission, is_update = create_or_update_submission(db, session, submission_payload)
+    if scan is not None:
+        scan.student_id = student.id
+        scan.page_type = payload.page_type
+        scan.status = ScanStatus.REVIEW_REQUIRED if submission.status == SubmissionStatus.REVIEW_REQUIRED else ScanStatus.SUCCESS
+        scan.failure_reason = None
+        scan.processed_at = now_utc()
+        db.commit()
     event_broker.publish(session.id, {"kind": "submission.updated", "session_id": session.id, "student_id": submission.student_id})
     return submission_out(submission, session, is_update)
 

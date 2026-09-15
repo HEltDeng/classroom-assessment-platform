@@ -48,6 +48,18 @@ class SessionStatus(str, Enum):
     ARCHIVED = "ARCHIVED"
 
 
+class ScannerSessionStatus(str, Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+
+class ScanStatus(str, Enum):
+    PROCESSING = "PROCESSING"
+    SUCCESS = "SUCCESS"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    FAILED = "FAILED"
+
+
 class QuestionType(str, Enum):
     SINGLE_CHOICE = "SINGLE_CHOICE"
     MULTIPLE_CHOICE = "MULTIPLE_CHOICE"
@@ -308,6 +320,76 @@ class AssessmentSession(Base):
     questions: Mapped[list[Question]] = relationship(back_populates="session", cascade="all, delete-orphan", order_by="Question.question_no")
     participants: Mapped[list[SessionParticipant]] = relationship(back_populates="session", cascade="all, delete-orphan")
     submissions: Mapped[list[Submission]] = relationship(back_populates="session", cascade="all, delete-orphan")
+
+
+class ScannerSession(Base):
+    __tablename__ = "scanner_sessions"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "assessment_session_id",
+            "opened_by_member_id",
+            name="uq_scanner_session_owner",
+        ),
+        Index("ix_scanner_sessions_assessment_status", "assessment_session_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    assessment_session_id: Mapped[str] = mapped_column(ForeignKey("assessment_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    opened_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    opened_by_member_id: Mapped[str] = mapped_column(ForeignKey("organization_members.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status: Mapped[ScannerSessionStatus] = mapped_column(
+        enum_column(ScannerSessionStatus),
+        default=ScannerSessionStatus.OPEN,
+        server_default="OPEN",
+        nullable=False,
+    )
+    opened_at: Mapped[datetime] = timestamp_column()
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    assessment_session: Mapped[AssessmentSession] = relationship()
+    opened_by_user: Mapped[User] = relationship()
+    opened_by_member: Mapped[OrganizationMember] = relationship()
+
+
+class ScanRecord(Base):
+    __tablename__ = "scans"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "client_capture_id", name="uq_scan_org_client_capture"),
+        Index("ix_scans_session_status", "assessment_session_id", "status"),
+        Index("ix_scans_scanner_session_created", "scanner_session_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    assessment_session_id: Mapped[str] = mapped_column(ForeignKey("assessment_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    scanner_session_id: Mapped[str] = mapped_column(ForeignKey("scanner_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    uploaded_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    uploaded_by_member_id: Mapped[str] = mapped_column(ForeignKey("organization_members.id", ondelete="RESTRICT"), nullable=False, index=True)
+    client_capture_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    page_token_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    image_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    image_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    image_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_type: Mapped[str] = mapped_column(String(80), default="ANSWER_SHEET", server_default="ANSWER_SHEET", nullable=False)
+    student_id: Mapped[str | None] = mapped_column(ForeignKey("students.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[ScanStatus] = mapped_column(
+        enum_column(ScanStatus),
+        default=ScanStatus.PROCESSING,
+        server_default="PROCESSING",
+        nullable=False,
+    )
+    request_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = timestamp_column()
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    assessment_session: Mapped[AssessmentSession] = relationship()
+    scanner_session: Mapped[ScannerSession] = relationship()
+    uploaded_by_user: Mapped[User] = relationship()
+    uploaded_by_member: Mapped[OrganizationMember] = relationship()
+    student: Mapped[Student | None] = relationship()
 
 
 class SessionParticipant(Base):

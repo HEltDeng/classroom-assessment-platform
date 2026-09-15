@@ -12,8 +12,10 @@ from .models import (
     OrganizationStatus,
     QuestionType,
     QRCodeStatus,
+    ScanStatus,
     SchoolStage,
     SessionStatus,
+    ScannerSessionStatus,
     StudentStatus,
     SubmissionSource,
     SubmissionStatus,
@@ -239,6 +241,44 @@ class SessionOut(APIModel):
     questions: list[QuestionOut] = Field(default_factory=list)
 
 
+class ScannerAssessmentOut(BaseModel):
+    id: str
+    organization_id: str
+    class_id: str
+    class_name: str
+    name: str | None
+    status: SessionStatus
+    question_count: int
+    submitted_count: int = 0
+    participant_count: int = 0
+
+
+class ScannerSessionOut(BaseModel):
+    id: str
+    organization_id: str
+    assessment_session_id: str
+    opened_by: str
+    opened_by_member_id: str
+    status: ScannerSessionStatus
+    opened_at: datetime
+    closed_at: datetime | None = None
+
+
+class ScanOut(BaseModel):
+    server_scan_id: str
+    session_id: str
+    scan_session_id: str
+    class_id: str
+    client_capture_id: str
+    status: ScanStatus
+    request_id: str
+    student_name: str | None = None
+    student_code: str | None = None
+    page_type: str
+    created_at: datetime
+    processed_at: datetime | None = None
+
+
 class SubmissionAnswerInput(BaseModel):
     question_no: int = Field(ge=1)
     value: str = Field(pattern="^[ABCD]$")
@@ -256,6 +296,7 @@ class SubmissionCreate(BaseModel):
 
 
 class RecognitionResultCreate(BaseModel):
+    scan_id: str | None = None
     student_id: str | None = None
     student_code: str | None = Field(default=None, max_length=80)
     student_qr_token: str | None = Field(default=None, min_length=16, max_length=256)

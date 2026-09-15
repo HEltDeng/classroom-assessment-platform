@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Classroom Assessment Platform"
+    app_name: str = "智慧课堂系统"
     app_env: str = "development"
     database_url: str = "postgresql+psycopg://classroom:classroom@localhost:5433/classroom_assessment"
     web_base_url: str = "http://localhost:5173"
@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 480
     allow_dev_submission: bool = True
     seed_demo_password: str = ""
+    scan_storage_dir: str = "data/scans"
+    max_scan_image_bytes: int = 15 * 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=(Path(__file__).resolve().parents[2] / ".env", ".env"),

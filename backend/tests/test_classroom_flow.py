@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
 os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test-classroom-assessment.sqlite3")
@@ -84,7 +85,7 @@ def test_complete_classroom_flow() -> None:
 
         session_response = client.post("/api/v1/sessions", headers=headers, json={
             "class_id": class_id,
-            "name": "阅读 A 篇",
+            "name": "进门测",
             "question_count": 4,
             "answer_keys": [
                 {"question_no": 1, "value": "B"},
@@ -158,6 +159,53 @@ def test_complete_classroom_flow() -> None:
         assert recognition_update.json()["page_type"] == "ANSWER_SHEET"
         assert recognition_update.json()["confidence"] == 0.6
         assert recognition_update.json()["status"] == "REVIEW_REQUIRED"
+
+        scannable_sessions = client.get(f"/api/v1/classes/{class_id}/sessions?status=ACTIVE", headers=headers)
+        assert scannable_sessions.status_code == 200
+        assert [item["id"] for item in scannable_sessions.json()] == [session_id]
+        scanner_session_response = client.post(f"/api/v1/sessions/{session_id}/scan-session", headers=headers)
+        assert scanner_session_response.status_code == 200, scanner_session_response.text
+        scanner_session_id = scanner_session_response.json()["id"]
+        capture_id = str(uuid4())
+        scan_headers = {**headers, "Idempotency-Key": capture_id}
+        scan_data = {
+            "session_id": session_id,
+            "scan_session_id": scanner_session_id,
+            "page_token": "opaque-page-token-for-test",
+            "client_capture_id": capture_id,
+        }
+        scan_files = {"image": ("answer-sheet.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")}
+        scan_response = client.post("/api/v1/scans", headers=scan_headers, data=scan_data, files=scan_files)
+        assert scan_response.status_code == 201, scan_response.text
+        scan = scan_response.json()
+        assert scan["session_id"] == session_id
+        assert scan["scan_session_id"] == scanner_session_id
+        assert scan["client_capture_id"] == capture_id
+        assert scan["status"] == "PROCESSING"
+        retry_response = client.post(
+            "/api/v1/scans",
+            headers=scan_headers,
+            data=scan_data,
+            files=scan_files,
+        )
+        assert retry_response.status_code == 201, retry_response.text
+        assert retry_response.json()["server_scan_id"] == scan["server_scan_id"]
+        scan_recognition = client.post(
+            f"/api/v1/sessions/{session_id}/recognition-results",
+            headers=headers,
+            json={
+                "scan_id": scan["server_scan_id"],
+                "student_id": student_two["id"],
+                "page_type": "ANSWER_SHEET",
+                "confidence": 0.6,
+                "answers": [
+                    {"question_no": 1, "value": "B"}, {"question_no": 2, "value": "C"},
+                    {"question_no": 3, "value": "A"}, {"question_no": 4, "value": "D"},
+                ],
+            },
+        )
+        assert scan_recognition.status_code == 200, scan_recognition.text
+        assert client.get(f"/api/v1/scans/{scan['server_scan_id']}", headers=headers).json()["status"] == "REVIEW_REQUIRED"
 
         active_sessions = client.get("/api/v1/sessions?status=ACTIVE", headers=headers)
         assert active_sessions.status_code == 200

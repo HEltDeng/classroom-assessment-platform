@@ -92,6 +92,8 @@ GET /api/v1/sessions/{session_id}/stream?access_token=<jwt>
 | SessionParticipant | 创建考试时的班级名单快照 |
 | Question / AnswerKey | 题型、分值和标准答案；当前完整实现单选 OMR |
 | Submission / StudentAnswer | 学生当前有效答题结果、得分和逐题答案 |
+| ScannerSession | 当前教师针对一场 Web 测试的现场扫描操作会话 |
+| ScanRecord | 机构隔离的图片接收回执、幂等键和识别状态 |
 
 考试状态：`DRAFT`、`ACTIVE`、`CLOSED`、`ARCHIVED`。
 
@@ -110,103 +112,91 @@ GET /api/v1/me
 GET /api/v1/organizations
 ```
 
-`/me` 返回当前固定机构、教师成员和角色；`/organizations` 为兼容旧客户端仅返回当前机构。数据库字段始终使用 `student_code`。
+登录使用 `organization_name + teacher_login_name + password`。JWT 固定 `organization_id` 与 `teacher_id`，Android 和 Web 使用同一个 `OrganizationMember`；客户端不能通过请求头切换机构。`/me` 返回当前用户、机构、教师成员和角色。
 
-### 获取班级与学生
+### 获取班级与 Web 创建的测试
 
 ```http
 GET /api/v1/classes
-GET /api/v1/classes/{class_id}
-GET /api/v1/classes/{class_id}/students
-GET /api/v1/students?search=<name-or-code>
+GET /api/v1/classes/{class_id}/sessions?status=ACTIVE
 ```
 
-`GET /classes/{class_id}/students` 只返回当前有效加入该班级的学生。历史移出记录不影响学生和历史课堂。
-
-学生主库与班级关系管理：
-
-```http
-POST /api/v1/organizations
-GET /api/v1/teachers
-POST /api/v1/teachers
-GET /api/v1/subjects
-POST /api/v1/subjects
-GET /api/v1/time-slots
-POST /api/v1/time-slots
-GET /api/v1/course-days
-POST /api/v1/course-days
-PATCH /api/v1/course-days/{weekday}
-GET /api/v1/students/import/template.xlsx
-POST /api/v1/students/import/preview
-POST /api/v1/students/import/confirm
-PATCH /api/v1/students/{student_id}
-POST /api/v1/classes/{class_id}/student-memberships
-POST /api/v1/students/{student_id}/transfer
-POST /api/v1/students/{student_id}/qr-token
-```
-
-`POST /students/import/preview` 只读取文件并返回 `PREPARE_CREATE`、`EXISTING_SUSPECT`、`DUPLICATE_IN_ORG`、`DUPLICATE_INPUT`、`EMPTY_NAME`、`INVALID_STAGE` 等状态；只有 `POST /students/import/confirm` 才写入 Student 或 ClassEnrollment。一个同名学生可默认建议复用，多个同名学生必须选择具体 `student_id`、新建或跳过，姓名不是主键。
-
-`POST /students/{student_id}/transfer` 关闭原班级的 active enrollment 并建立目标班级关系，学生 UUID、机构编号、考试和历史成绩保持不变。移出班级只关闭 enrollment，机构学生主库记录仍保留。
-
-### 获取 Active Exam
-
-```http
-GET /api/v1/sessions?status=ACTIVE
-GET /api/v1/sessions/{session_id}
-```
-
-返回包含 `class_id`、`class_name`、`subject_name`、`exam_type`、`question_count`、`total_score`、状态和题目标准答案/分值。Scanner 通常只需要选择当前班级的 Active Exam。
-
-考试创建：
-
-```http
-POST /api/v1/sessions
-```
-
-请求至少包含 `class_id`、`question_count`、逐题 `answer_keys`；可选 `subject_id`、`exam_type` 和逐题 `points`。Session 兼容旧接口名称，但 Web 页面统一使用“新建考试/发布考试”，不使用“布置作业”。
-
-### 提交标准化答题结果
-
-```http
-POST /api/v1/sessions/{session_id}/submissions
-```
-
-请求：
+两个接口都按当前签名机构和教师可见班级过滤。第二个接口只返回 Web 已创建且当前为 `ACTIVE` 的 `AssessmentSession`：
 
 ```json
 {
-  "student_id": "student-uuid",
-  "answers": [
-    {"question_no": 1, "value": "B", "confidence": 0.99},
-    {"question_no": 2, "value": "C", "confidence": 0.91}
-  ],
-  "source": "android",
-  "review_required": false,
-  "idempotency_key": "scanner-device-job-id"
+  "id": "session-uuid",
+  "organization_id": "org-uuid",
+  "class_id": "class-uuid",
+  "class_name": "初一 A 班",
+  "name": "进门测",
+  "status": "ACTIVE",
+  "question_count": 20,
+  "submitted_count": 18,
+  "participant_count": 25
 }
 ```
 
-`source`：`android`、`mock`、`recognition`。Android 正式调用使用 `android`。答案题号必须唯一且属于本场题目；v1 的 `value` 只能是 `A/B/C/D`。
+Android 不创建或替换班级、测试、学生和成绩数据。
 
-响应：
+### 创建或获取扫描会话
+
+```http
+POST /api/v1/sessions/{session_id}/scan-session
+GET /api/v1/sessions/{session_id}/scan-session
+```
+
+POST 按 `(organization_id, assessment_session_id, opened_by_member_id)` 幂等创建/恢复一个 `ScannerSession`。测试必须是 `ACTIVE`，且当前教师必须有该班级权限。GET 只读取当前教师自己的扫描会话。
 
 ```json
 {
-  "id": "submission-uuid",
+  "id": "scanner-session-uuid",
+  "organization_id": "org-uuid",
+  "assessment_session_id": "session-uuid",
+  "opened_by": "王老师",
+  "opened_by_member_id": "membership-uuid",
+  "status": "OPEN"
+}
+```
+
+### 上传扫描图片
+
+```http
+POST /api/v1/scans
+Content-Type: multipart/form-data
+Authorization: Bearer <access_token>
+Idempotency-Key: <client_capture_id>
+X-Request-ID: <optional-request-id>
+```
+
+必需 multipart 字段：`session_id`、`scan_session_id`、`page_token`、`client_capture_id`（UUID）和 `image`（JPEG）。`page_token` 只作为不透明页面 token；服务端只保存哈希，并在同一机构/测试名单范围内尝试关联学生。Android 不把二维码当作最终身份事实。
+
+服务端以 `(organization_id, client_capture_id)` 去重；重试必须继续使用同一个 UUID 和 `Idempotency-Key`，不会创建第二条扫描回执。初始响应：
+
+```json
+{
+  "server_scan_id": "scan-uuid",
   "session_id": "session-uuid",
-  "student_id": "student-uuid",
-  "status": "SUBMITTED",
-  "source": "android",
-  "page_type": null,
-  "confidence": null,
-  "is_update": false,
-  "correct_count": 4,
-  "question_count": 4,
-  "submitted_at": "2026-09-13T00:00:00Z",
-  "updated_at": "2026-09-13T00:00:00Z"
+  "scan_session_id": "scanner-session-uuid",
+  "class_id": "class-uuid",
+  "client_capture_id": "capture-uuid",
+  "status": "PROCESSING",
+  "request_id": "request-uuid",
+  "student_name": null,
+  "student_code": null,
+  "page_type": "ANSWER_SHEET",
+  "created_at": "2026-09-15T00:00:00Z",
+  "processed_at": null
 }
 ```
+
+### 查询扫描状态
+
+```http
+GET /api/v1/scans/{server_scan_id}
+```
+
+返回状态 `PROCESSING`、`SUCCESS`、`REVIEW_REQUIRED` 或 `FAILED`。Recognition Service 通过 Backend 的标准识别结果接口使用 `scan_id` 回写状态；Android 只显示状态和队列，不引入 OMR/OCR SDK。
 
 ## 4. Recognition Service 交接接口
 
