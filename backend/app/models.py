@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -29,6 +29,12 @@ class StudentStatus(str, Enum):
     INACTIVE = "INACTIVE"
 
 
+class SchoolStage(str, Enum):
+    PRIMARY = "PRIMARY"
+    MIDDLE = "MIDDLE"
+    HIGH = "HIGH"
+
+
 class MemberRole(str, Enum):
     OWNER = "OWNER"
     ADMIN = "ADMIN"
@@ -43,8 +49,32 @@ class SessionStatus(str, Enum):
 
 
 class QuestionType(str, Enum):
+    SINGLE_CHOICE = "SINGLE_CHOICE"
+    MULTIPLE_CHOICE = "MULTIPLE_CHOICE"
+    TRUE_FALSE = "TRUE_FALSE"
+    OCR_SHORT_ANSWER = "OCR_SHORT_ANSWER"
+    OCR_NUMBER = "OCR_NUMBER"
+    OTHER = "OTHER"
+    # Kept so old scanner clients and existing rows remain readable.
     MCQ = "MCQ"
     TEXT = "TEXT"
+
+
+class ExamType(str, Enum):
+    ENTRY = "ENTRY"
+    IN_CLASS = "IN_CLASS"
+    EXIT = "EXIT"
+    CUSTOM = "CUSTOM"
+
+
+class CourseDayStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+
+
+class QRCodeStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
 
 
 class SubmissionStatus(str, Enum):
@@ -70,6 +100,8 @@ class Organization(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    code_prefix: Mapped[str] = mapped_column(String(12), default="ORG", server_default="ORG", nullable=False)
+    student_serial: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     status: Mapped[OrganizationStatus] = mapped_column(enum_column(OrganizationStatus), default=OrganizationStatus.ACTIVE, nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -78,6 +110,9 @@ class Organization(Base):
     members: Mapped[list[OrganizationMember]] = relationship(back_populates="organization", cascade="all, delete-orphan")
     classes: Mapped[list[ClassModel]] = relationship(back_populates="organization")
     students: Mapped[list[Student]] = relationship(back_populates="organization")
+    subjects: Mapped[list[Subject]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    time_slots: Mapped[list[TimeSlot]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    course_days: Mapped[list[CourseDay]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 
 class OrganizationSettings(Base):
@@ -122,6 +157,55 @@ class OrganizationMember(Base):
     user: Mapped[User] = relationship(back_populates="memberships")
 
 
+class Subject(Base):
+    __tablename__ = "subjects"
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_org_subject_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    created_at: Mapped[datetime] = timestamp_column()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    organization: Mapped[Organization] = relationship(back_populates="subjects")
+    sessions: Mapped[list[AssessmentSession]] = relationship(back_populates="subject")
+
+
+class TimeSlot(Base):
+    __tablename__ = "time_slots"
+    __table_args__ = (UniqueConstraint("organization_id", "slot_code", name="uq_org_time_slot_code"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    slot_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    start_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    end_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    applicable_school_stage: Mapped[SchoolStage | None] = mapped_column(enum_column(SchoolStage), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    created_at: Mapped[datetime] = timestamp_column()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    organization: Mapped[Organization] = relationship(back_populates="time_slots")
+    classes: Mapped[list[ClassModel]] = relationship(back_populates="time_slot")
+
+
+class CourseDay(Base):
+    __tablename__ = "organization_course_days"
+    __table_args__ = (UniqueConstraint("organization_id", "weekday", name="uq_org_course_day"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[CourseDayStatus] = mapped_column(enum_column(CourseDayStatus), default=CourseDayStatus.ACTIVE, server_default="ACTIVE", nullable=False)
+    created_at: Mapped[datetime] = timestamp_column()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    organization: Mapped[Organization] = relationship(back_populates="course_days")
+
+
 class ClassModel(Base):
     __tablename__ = "classes"
     __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_org_class_name"),)
@@ -129,11 +213,18 @@ class ClassModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    teacher_id: Mapped[str | None] = mapped_column(ForeignKey("organization_members.id", ondelete="RESTRICT"), nullable=True, index=True)
+    school_stage: Mapped[SchoolStage] = mapped_column(enum_column(SchoolStage), default=SchoolStage.PRIMARY, server_default="PRIMARY", nullable=False)
+    grade: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    day_of_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_slot_id: Mapped[str | None] = mapped_column(ForeignKey("time_slots.id", ondelete="RESTRICT"), nullable=True, index=True)
     status: Mapped[ClassStatus] = mapped_column(enum_column(ClassStatus), default=ClassStatus.ACTIVE, nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     organization: Mapped[Organization] = relationship(back_populates="classes")
+    teacher_membership: Mapped[OrganizationMember | None] = relationship(foreign_keys=[teacher_id])
+    time_slot: Mapped[TimeSlot | None] = relationship(back_populates="classes")
     enrollments: Mapped[list[ClassEnrollment]] = relationship(back_populates="class_model")
     sessions: Mapped[list[AssessmentSession]] = relationship(back_populates="class_model")
 
@@ -146,12 +237,32 @@ class Student(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     student_code: Mapped[str] = mapped_column(String(80), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    school_stage: Mapped[SchoolStage] = mapped_column(enum_column(SchoolStage), default=SchoolStage.PRIMARY, server_default="PRIMARY", nullable=False)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    parent_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[StudentStatus] = mapped_column(enum_column(StudentStatus), default=StudentStatus.ACTIVE, nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     organization: Mapped[Organization] = relationship(back_populates="students")
     enrollments: Mapped[list[ClassEnrollment]] = relationship(back_populates="student")
+    qr_codes: Mapped[list[StudentQRCode]] = relationship(back_populates="student", cascade="all, delete-orphan")
+
+
+class StudentQRCode(Base):
+    __tablename__ = "student_qr_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    status: Mapped[QRCodeStatus] = mapped_column(enum_column(QRCodeStatus), default=QRCodeStatus.ACTIVE, server_default="ACTIVE", nullable=False)
+    issued_at: Mapped[datetime] = timestamp_column()
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    student: Mapped[Student] = relationship(back_populates="qr_codes")
 
 
 class ClassEnrollment(Base):
@@ -177,8 +288,11 @@ class AssessmentSession(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="RESTRICT"), nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    subject_id: Mapped[str | None] = mapped_column(ForeignKey("subjects.id", ondelete="RESTRICT"), nullable=True, index=True)
+    exam_type: Mapped[ExamType] = mapped_column(enum_column(ExamType), default=ExamType.CUSTOM, server_default="CUSTOM", nullable=False)
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     question_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_score: Mapped[float] = mapped_column(Float, default=0, server_default="0", nullable=False)
     status: Mapped[SessionStatus] = mapped_column(enum_column(SessionStatus), default=SessionStatus.DRAFT, nullable=False, index=True)
     created_at: Mapped[datetime] = timestamp_column()
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -186,6 +300,7 @@ class AssessmentSession(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     class_model: Mapped[ClassModel] = relationship(back_populates="sessions")
+    subject: Mapped[Subject | None] = relationship(back_populates="sessions")
     questions: Mapped[list[Question]] = relationship(back_populates="session", cascade="all, delete-orphan", order_by="Question.question_no")
     participants: Mapped[list[SessionParticipant]] = relationship(back_populates="session", cascade="all, delete-orphan")
     submissions: Mapped[list[Submission]] = relationship(back_populates="session", cascade="all, delete-orphan")
@@ -213,7 +328,8 @@ class Question(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     session_id: Mapped[str] = mapped_column(ForeignKey("assessment_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     question_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    question_type: Mapped[QuestionType] = mapped_column(enum_column(QuestionType), default=QuestionType.MCQ, nullable=False)
+    question_type: Mapped[QuestionType] = mapped_column(enum_column(QuestionType), default=QuestionType.SINGLE_CHOICE, server_default="SINGLE_CHOICE", nullable=False)
+    points: Mapped[float] = mapped_column(Float, default=1, server_default="1", nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
 
     session: Mapped[AssessmentSession] = relationship(back_populates="questions")
@@ -243,6 +359,7 @@ class Submission(Base):
     source: Mapped[SubmissionSource] = mapped_column(enum_column(SubmissionSource), default=SubmissionSource.MOCK, nullable=False)
     page_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
     submitted_at: Mapped[datetime] = timestamp_column()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

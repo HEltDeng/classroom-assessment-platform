@@ -37,14 +37,14 @@ def get_current_user(
 def get_current_membership(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    organization_header_id: str | None = Header(default=None, alias="X-Organization-Id"),
 ) -> tuple[User, OrganizationMember]:
     query = select(OrganizationMember).where(
         OrganizationMember.user_id == user.id,
         OrganizationMember.organization.has(status=OrganizationStatus.ACTIVE),
     )
-    if organization_id:
-        query = query.where(OrganizationMember.organization_id == organization_id)
+    if organization_header_id:
+        query = query.where(OrganizationMember.organization_id == organization_header_id)
     membership = db.scalar(query.order_by(OrganizationMember.created_at))
     if membership is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No active organization membership")
@@ -53,7 +53,6 @@ def get_current_membership(
 
 def require_admin(context: tuple[User, OrganizationMember] = Depends(get_current_membership)) -> tuple[User, OrganizationMember]:
     user, membership = context
-    if membership.role not in {MemberRole.OWNER, MemberRole.ADMIN, MemberRole.TEACHER}:
+    if membership.role not in {MemberRole.OWNER, MemberRole.ADMIN}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient organization role")
     return context
-

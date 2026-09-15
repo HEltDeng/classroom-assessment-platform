@@ -1,18 +1,31 @@
 # V1 验收清单
 
-更新时间：2026-09-13（Asia/Singapore）
+更新时间：2026-09-15（Asia/Singapore）
 
 ## 本地自动化
 
 | 项目 | 状态 | 证据 |
 | --- | --- | --- |
 | Alembic migration 从空库升级 | PASS | `backend/alembic` 升级至 head |
-| Backend 单元/集成流程 | PASS | `backend/.venv/Scripts/python.exe -m pytest -q`：1 passed |
+| Backend 单元/集成流程 | PASS | `backend/.venv/Scripts/python.exe -m pytest tests -q`：2 passed |
 | Alembic schema drift 检查 | PASS | `alembic check`：No new upgrade operations detected |
 | FastAPI health/readiness | PASS | `/health`、`/ready` 均返回成功 |
 | OpenAPI 交接接口 | PASS | 已验证 class students、Active filter、recognition-results 路径存在 |
 | Web TypeScript/生产构建 | PASS | `pnpm run build` 成功 |
 | Web 控制台级 UI | PASS | 登录、组织、班级、学生管理、课堂创建、结果页 |
+
+## 2026-09-15 机构学生主库增量验收
+
+| 场景 | 状态 | 证据 |
+| --- | --- | --- |
+| 首次登录后机构初始化 | PASS | TestClient 创建“叶芝”，前缀规范化为 `YZ`，自动进入机构工作台边界 |
+| 机构流水号与导入 20 人 | PASS | `test_organization_learning.py` 验证 `YZ0001`–`YZ0020`，预览阶段数据库仍为空 |
+| 重复导入与同名处理 | PASS | 单同名默认复用；两个同名返回 `DUPLICATE_IN_ORG`；空姓名返回 `EMPTY_NAME` |
+| 教师、学段、上课日、时段班级 | PASS | 创建王老师/李老师及周六 B 段初中班，后端校验机构归属和时段适用学段 |
+| Membership 选择、转班、移出 | PASS | 转班关闭旧 enrollment、保留学生编号；移出后学生主库仍可查询 |
+| 考试、学科、10 题 OMR、二维码识别 | PASS | `ENTRY` + 数学 + `ABCDABCDAB` + 逐题分值与 QR token recognition 集成用例 |
+| 学生库/班级/成绩报表 XLSX | PASS | 学生库、班级、成绩单、小分表、答题统计响应为 XLSX |
+| 新增 Web 页面人工宽屏/手机回归 | PASS | 本地真实浏览器完成机构初始化、教师、班级、学生库、机构学生选择、考试创建、实时考试和系统设置；桌面宽屏、手机布局与导航抽屉均已验证 |
 
 ## 真实浏览器闭环
 

@@ -75,20 +75,25 @@ GET /api/v1/sessions/{session_id}/stream?access_token=<jwt>
 
 | 资源 | 说明 |
 | --- | --- |
-| Organization / OrganizationSettings | 多机构隔离及机构展示配置 |
-| User / OrganizationMember | 登录用户与组织角色 |
-| Class | 组织内班级，可归档 |
-| Student | 组织内学生；`organization_id + student_code` 唯一 |
-| ClassEnrollment | 学生进出班级的历史关系；移出不删除 Student |
-| AssessmentSession | 一次班级课堂答题活动 |
-| SessionParticipant | 创建课堂时的班级名单快照 |
-| Question / AnswerKey | 本场题目与标准答案 |
-| Submission / StudentAnswer | 学生当前有效答题结果与逐题答案 |
+| Organization / OrganizationSettings | 多机构隔离、机构代码前缀和展示配置 |
+| User / OrganizationMember | 登录用户与 OWNER/ADMIN/TEACHER 角色 |
+| Subject / CourseDay / TimeSlot | 机构级学科、上课日和可配置上课时段 |
+| Class | 组织内班级，绑定教师、学段、上课日和时段 |
+| Student | 机构学生主库；`organization_id + student_code` 唯一且编号不可变 |
+| ClassEnrollment | 学生进出班级的历史关系；移出/转班不删除 Student |
+| StudentQRCode | 学生固定二维码 token 的哈希、版本和撤销状态 |
+| AssessmentSession | 一场班级考试（API 保留 session 命名以兼容旧 Scanner） |
+| SessionParticipant | 创建考试时的班级名单快照 |
+| Question / AnswerKey | 题型、分值和标准答案；当前完整实现单选 OMR |
+| Submission / StudentAnswer | 学生当前有效答题结果、得分和逐题答案 |
 
-课堂状态：`DRAFT`、`ACTIVE`、`CLOSED`、`ARCHIVED`。
+考试状态：`DRAFT`、`ACTIVE`、`CLOSED`、`ARCHIVED`。
 
-学生状态：`PENDING`、`SUBMITTED`、`REVIEW_REQUIRED`。
-题型枚举已预留 `MCQ`、`TEXT`；v1 只接受 `A/B/C/D`。
+学段：`PRIMARY`、`MIDDLE`、`HIGH`。考试类型：`ENTRY`、`IN_CLASS`、`EXIT`、`CUSTOM`。
+学生状态：`ACTIVE`、`INACTIVE`；结果状态：`PENDING`、`SUBMITTED`、`REVIEW_REQUIRED`。
+题型预留 `SINGLE_CHOICE`、`MULTIPLE_CHOICE`、`TRUE_FALSE`、`OCR_SHORT_ANSWER`、`OCR_NUMBER`、`OTHER`，当前考试创建完整实现 `SINGLE_CHOICE`，答案值为 `A/B/C/D`。
+
+学生编号由服务端在机构行上执行原子流水号递增，再由数据库唯一约束兜底；客户端不得通过“查询最大值 + 1”生成编号。
 
 ## 3. Android Scanner 交接接口
 
@@ -112,14 +117,48 @@ GET /api/v1/students?search=<name-or-code>
 
 `GET /classes/{class_id}/students` 只返回当前有效加入该班级的学生。历史移出记录不影响学生和历史课堂。
 
-### 获取 Active Session
+学生主库与班级关系管理：
+
+```http
+POST /api/v1/organizations
+GET /api/v1/teachers
+POST /api/v1/teachers
+GET /api/v1/subjects
+POST /api/v1/subjects
+GET /api/v1/time-slots
+POST /api/v1/time-slots
+GET /api/v1/course-days
+POST /api/v1/course-days
+PATCH /api/v1/course-days/{weekday}
+GET /api/v1/students/import/template.xlsx
+POST /api/v1/students/import/preview
+POST /api/v1/students/import/confirm
+PATCH /api/v1/students/{student_id}
+POST /api/v1/classes/{class_id}/student-memberships
+POST /api/v1/students/{student_id}/transfer
+POST /api/v1/students/{student_id}/qr-token
+```
+
+`POST /students/import/preview` 只读取文件并返回 `PREPARE_CREATE`、`EXISTING_SUSPECT`、`DUPLICATE_IN_ORG`、`DUPLICATE_INPUT`、`EMPTY_NAME`、`INVALID_STAGE` 等状态；只有 `POST /students/import/confirm` 才写入 Student 或 ClassEnrollment。一个同名学生可默认建议复用，多个同名学生必须选择具体 `student_id`、新建或跳过，姓名不是主键。
+
+`POST /students/{student_id}/transfer` 关闭原班级的 active enrollment 并建立目标班级关系，学生 UUID、机构编号、考试和历史成绩保持不变。移出班级只关闭 enrollment，机构学生主库记录仍保留。
+
+### 获取 Active Exam
 
 ```http
 GET /api/v1/sessions?status=ACTIVE
 GET /api/v1/sessions/{session_id}
 ```
 
-返回包含 `class_id`、`class_name`、`question_count`、状态和题目标准答案。Scanner 通常只需要选择当前班级的 Active Session。
+返回包含 `class_id`、`class_name`、`subject_name`、`exam_type`、`question_count`、`total_score`、状态和题目标准答案/分值。Scanner 通常只需要选择当前班级的 Active Exam。
+
+考试创建：
+
+```http
+POST /api/v1/sessions
+```
+
+请求至少包含 `class_id`、`question_count`、逐题 `answer_keys`；可选 `subject_id`、`exam_type` 和逐题 `points`。Session 兼容旧接口名称，但 Web 页面统一使用“新建考试/发布考试”，不使用“布置作业”。
 
 ### 提交标准化答题结果
 
@@ -175,7 +214,8 @@ POST /api/v1/sessions/{session_id}/recognition-results
 
 ```json
 {
-  "student_code": "S001",
+  "student_code": "YZ0001",
+  "student_qr_token": "<one-time-issued-token>",
   "page_type": "ANSWER_SHEET",
   "answers": [
     {"question_no": 1, "value": "B", "confidence": 0.96},
@@ -187,9 +227,9 @@ POST /api/v1/sessions/{session_id}/recognition-results
 }
 ```
 
-可使用 `student_id` 替代 `student_code`。服务端会把 `source` 固定为 `recognition`，保存 `page_type` 与整体 `confidence`；整体 confidence 小于 `0.8` 时自动设置 `REVIEW_REQUIRED`。该接口仍遵守同一份 Submission 唯一约束。
+可使用 `student_id` 或不暴露数据库信息的 `student_qr_token` 替代 `student_code`。服务端会把 `source` 固定为 `recognition`，保存 `page_type` 与整体 `confidence`；整体 confidence 小于 `0.8` 时自动设置 `REVIEW_REQUIRED`。该接口仍遵守同一份 Submission 唯一约束。
 
-## 5. 查询课堂与实时结果
+## 5. 查询考试与实时结果
 
 ```http
 GET /api/v1/sessions/{session_id}/results
@@ -237,7 +277,7 @@ Accept: text/event-stream
 | 401 | 未登录、Token 无效或过期 |
 | 403 | 无组织成员权限，或生产环境禁用 mock submission |
 | 404 | 组织、班级、学生或 Session 不存在 |
-| 409 | 状态冲突、班级重复、重复加入或课堂已结束 |
+| 409 | 状态冲突、班级重复、重复加入、编号前缀已冻结或考试已结束 |
 | 422 | 字段校验失败、学生不是本场参与者、答案题号非法 |
 | 500 | 服务端异常；客户端应记录 request id（如网关提供）并重试前退避 |
 

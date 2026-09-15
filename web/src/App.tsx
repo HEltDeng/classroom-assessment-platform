@@ -10,9 +10,11 @@ import {
   LoginPage,
   NewSessionPage,
   OrganizationsPage,
+  OrganizationSetupPage,
   ResultsPage,
   SessionsPage,
   StudentsPage,
+  TeachersPage,
 } from './pages'
 
 interface AuthContextValue {
@@ -71,11 +73,12 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 }
 
 const navigation = [
-  { to: '/dashboard', label: '总览', icon: '⌂' },
+  { to: '/dashboard', label: '工作台', icon: '⌂' },
+  { to: '/teachers', label: '教师', icon: '♙', adminOnly: true },
   { to: '/classes', label: '班级', icon: '▦' },
-  { to: '/students', label: '学生', icon: '◉' },
-  { to: '/sessions', label: '课堂记录', icon: '◷' },
-  { to: '/organizations', label: '机构设置', icon: '⚙' },
+  { to: '/students', label: '学生库', icon: '◉' },
+  { to: '/sessions', label: '考试', icon: '◷' },
+  { to: '/organizations', label: '系统设置', icon: '⚙', adminOnly: true },
 ]
 
 function AppShell() {
@@ -86,6 +89,8 @@ function AppShell() {
   const memberships = me?.memberships ?? []
   const currentOrgId = getOrganizationId() || memberships[0]?.organization_id || ''
   const currentOrg = memberships.find((membership) => membership.organization_id === currentOrgId)?.organization || memberships[0]?.organization
+  const currentMembership = memberships.find((membership) => membership.organization_id === currentOrgId) || memberships[0]
+  const visibleNavigation = navigation.filter((item) => !item.adminOnly || currentMembership?.role === 'OWNER' || currentMembership?.role === 'ADMIN')
 
   const chooseOrganization = (organizationId: string) => {
     setOrganizationId(organizationId)
@@ -109,7 +114,7 @@ function AppShell() {
           </select>
         </div>
         <nav className="main-nav" aria-label="主导航">
-          {navigation.map((item) => (
+          {visibleNavigation.map((item) => (
             <NavLink key={item.to} to={item.to} onClick={() => setMenuOpen(false)} className={({ isActive }) => `nav-item ${isActive ? 'nav-item-active' : ''}`}>
               <span className="nav-icon">{item.icon}</span><span>{item.label}</span>
             </NavLink>
@@ -130,7 +135,7 @@ function AppShell() {
           </div>
           <div className="topbar-user">
             <div className="avatar">{me?.display_name.slice(0, 1) || '师'}</div>
-            <div className="user-copy"><strong>{me?.display_name}</strong><span>教师账户</span></div>
+            <div className="user-copy"><strong>{me?.display_name}</strong><span>{currentMembership?.role === 'TEACHER' ? '教师账户' : '机构管理员'}</span></div>
             <button className="text-button" onClick={signOut}>退出</button>
           </div>
         </header>
@@ -142,8 +147,12 @@ function AppShell() {
 
 function ProtectedLayout() {
   const { me, loading } = useAuth()
+  const location = useLocation()
   if (loading) return <div className="center-state"><div className="spinner" /><p>正在恢复工作台…</p></div>
   if (!me) return <Navigate to="/login" replace />
+  if (!me.memberships.length && location.pathname !== '/setup') return <Navigate to="/setup" replace />
+  if (!me.memberships.length && location.pathname === '/setup') return <Outlet />
+  if (me.memberships.length && location.pathname === '/setup') return <Navigate to="/dashboard" replace />
   return <AppShell />
 }
 
@@ -156,7 +165,9 @@ function AppRoutes() {
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/setup" element={<OrganizationSetupPage />} />
         <Route path="/organizations" element={<OrganizationsPage />} />
+        <Route path="/teachers" element={<TeachersPage />} />
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/classes/:classId" element={<ClassDetailPage />} />
         <Route path="/students" element={<StudentsPage />} />
@@ -173,4 +184,3 @@ function AppRoutes() {
 export default function App() {
   return <AuthProvider><BrowserRouter><AppRoutes /></BrowserRouter></AuthProvider>
 }
-
