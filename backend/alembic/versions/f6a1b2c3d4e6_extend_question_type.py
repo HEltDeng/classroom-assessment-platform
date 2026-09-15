@@ -34,8 +34,17 @@ question_type = sa.Enum(
 def upgrade() -> None:
     # The original v1 column was VARCHAR(4) for MCQ/TEXT. Recreate it with
     # the complete enum storage length while retaining all legacy values.
-    with op.batch_alter_table("questions", recreate="always") as batch_op:
-        batch_op.alter_column(
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("questions", recreate="always") as batch_op:
+            batch_op.alter_column(
+                "question_type",
+                existing_type=sa.String(length=4),
+                type_=question_type,
+                existing_nullable=False,
+            )
+    else:
+        op.alter_column(
+            "questions",
             "question_type",
             existing_type=sa.String(length=4),
             type_=question_type,
@@ -44,8 +53,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("questions", recreate="always") as batch_op:
-        batch_op.alter_column(
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("questions", recreate="always") as batch_op:
+            batch_op.alter_column(
+                "question_type",
+                existing_type=question_type,
+                type_=sa.String(length=4),
+                existing_nullable=False,
+            )
+    else:
+        op.alter_column(
+            "questions",
             "question_type",
             existing_type=question_type,
             type_=sa.String(length=4),
