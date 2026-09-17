@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     seed_demo_password: str = ""
     scan_storage_dir: str = "data/scans"
     max_scan_image_bytes: int = 15 * 1024 * 1024
+    qr_signing_secret: str = ""
+    recognition_service_url: str = ""
+    recognition_timeout_seconds: int = 120
 
     model_config = SettingsConfigDict(
         env_file=(Path(__file__).resolve().parents[2] / ".env", ".env"),

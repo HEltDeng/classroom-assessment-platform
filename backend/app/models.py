@@ -428,7 +428,7 @@ class AnswerKey(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     question_id: Mapped[str] = mapped_column(ForeignKey("questions.id", ondelete="CASCADE"), unique=True, nullable=False)
-    value: Mapped[str] = mapped_column(String(16), nullable=False)
+    value: Mapped[str] = mapped_column(String(2000), nullable=False)
     created_at: Mapped[datetime] = timestamp_column()
 
     question: Mapped[Question] = relationship(back_populates="answer_key")
@@ -462,7 +462,7 @@ class StudentAnswer(Base):
     submission_id: Mapped[str] = mapped_column(ForeignKey("submissions.id", ondelete="CASCADE"), nullable=False, index=True)
     question_id: Mapped[str] = mapped_column(ForeignKey("questions.id", ondelete="RESTRICT"), nullable=False, index=True)
     question_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    value: Mapped[str] = mapped_column(String(16), nullable=False)
+    value: Mapped[str] = mapped_column(String(2000), nullable=False)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
 

@@ -134,6 +134,7 @@ export interface StudentLiveState {
 }
 
 export interface QuestionStats {
+  question_type: Question['question_type']
   question_no: number
   correct_answer: string
   answered_count: number

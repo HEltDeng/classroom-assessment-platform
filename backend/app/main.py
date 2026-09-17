@@ -38,6 +38,7 @@ from .models import (
     OrganizationSettings,
     OrganizationStatus,
     Question,
+    QuestionType,
     QRCodeStatus,
     ScanRecord,
     ScanStatus,
@@ -516,8 +517,8 @@ def create_or_update_submission(
 ) -> tuple[Submission, bool]:
     if payload.source == SubmissionSource.MOCK and not settings.allow_dev_submission:
         raise HTTPException(status_code=403, detail="Development submission is disabled")
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(status_code=409, detail="Only an ACTIVE session accepts submissions")
+    if session.status not in {SessionStatus.ACTIVE, SessionStatus.CLOSED} or (session.status == SessionStatus.CLOSED and payload.source == SubmissionSource.MOCK):
+        raise HTTPException(status_code=409, detail="当前考试不接受此类提交")
     participant = db.scalar(
         select(SessionParticipant).where(
             SessionParticipant.session_id == session.id,
@@ -526,24 +527,34 @@ def create_or_update_submission(
     )
     if participant is None:
         raise HTTPException(status_code=422, detail="Student is not a participant in this session")
+    db.execute(select(AssessmentSession.id).where(AssessmentSession.id == session.id).with_for_update())
     question_map = {question.question_no: question for question in session.questions}
     seen: set[int] = set()
     for answer in payload.answers:
         if answer.question_no in seen or answer.question_no not in question_map:
             raise HTTPException(status_code=422, detail="Answers must contain unique valid question numbers")
+        if question_map[answer.question_no].question_type in {QuestionType.SINGLE_CHOICE, QuestionType.MCQ} and answer.value not in {"", "A", "B", "C", "D"}:
+            raise HTTPException(status_code=422, detail="选择题答案必须为 A/B/C/D 或空白")
         seen.add(answer.question_no)
     existing = db.scalar(
         select(Submission)
         .options(selectinload(Submission.answers))
         .where(Submission.session_id == session.id, Submission.student_id == payload.student_id)
     )
+    if existing and payload.source == SubmissionSource.RECOGNITION:
+        from .schemas import SubmissionAnswerInput
+        incoming = {answer.question_no for answer in payload.answers}
+        payload.answers.extend(SubmissionAnswerInput(question_no=a.question_no, value=a.value, confidence=a.confidence) for a in existing.answers if a.question_no not in incoming)
+        payload.review_required = payload.review_required or any(a.confidence is not None and a.confidence < 0.8 for a in payload.answers)
+    if payload.source == SubmissionSource.RECOGNITION:
+        payload.review_required = payload.review_required or len(payload.answers) < session.question_count
     is_update = existing is not None
     submission = existing or Submission(session_id=session.id, student_id=payload.student_id)
     submission.status = SubmissionStatus.REVIEW_REQUIRED if payload.review_required else SubmissionStatus.SUBMITTED
     submission.source = payload.source
     submission.page_type = payload.page_type
     submission.confidence = payload.confidence
-    submission.score = sum(question_map[answer.question_no].points for answer in payload.answers if answer.value == question_map[answer.question_no].answer_key.value)
+    submission.score = sum(question_map[answer.question_no].points for answer in payload.answers if answer.value.strip() == question_map[answer.question_no].answer_key.value.strip() and (answer.confidence is None or answer.confidence >= 0.8))
     if existing:
         existing.answers.clear()
         # Flush deletions before inserting replacement rows so the unique
@@ -557,7 +568,7 @@ def create_or_update_submission(
                 question_no=question.question_no,
                 value=answer.value,
                 confidence=answer.confidence,
-                is_correct=answer.value == question.answer_key.value,
+                is_correct=answer.value.strip() == question.answer_key.value.strip() and (answer.confidence is None or answer.confidence >= 0.8),
             )
         )
     db.add(submission)
@@ -892,7 +903,7 @@ def list_classes(context: tuple[User, OrganizationMember] = Depends(get_current_
 @app.get("/api/v1/classes/{class_id}/sessions", response_model=list[ScannerAssessmentOut], tags=["scanner"])
 def list_scannable_sessions(
     class_id: str,
-    status: SessionStatus | None = Query(default=SessionStatus.ACTIVE),
+    status: SessionStatus | None = Query(default=None),
     context: tuple[User, OrganizationMember] = Depends(get_current_membership),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -908,6 +919,8 @@ def list_scannable_sessions(
     )
     if status is not None:
         query = query.where(AssessmentSession.status == status)
+    if status is None:
+        query = query.where(AssessmentSession.status.in_([SessionStatus.ACTIVE, SessionStatus.CLOSED]))
     sessions = db.scalars(query.order_by(AssessmentSession.created_at.desc())).all()
     return [scanner_assessment_out(db, session) for session in sessions]
 
@@ -1573,8 +1586,8 @@ def open_scan_session(
 ) -> dict[str, Any]:
     session = session_or_404(db, session_id, org_id_from_context(context))
     ensure_session_access(session, context)
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(status_code=409, detail="Only an ACTIVE test can be scanned")
+    if session.status not in {SessionStatus.ACTIVE, SessionStatus.CLOSED}:
+        raise HTTPException(status_code=409, detail="草稿或已归档考试不能扫描")
     return scanner_session_out(get_or_create_scanner_session(db, session, context))
 
 
@@ -1620,13 +1633,17 @@ def upload_scan(
         raise HTTPException(status_code=422, detail="client_capture_id 必须是 UUID") from exc
     if idempotency_key is None or idempotency_key.strip().lower() != canonical_capture_id:
         raise HTTPException(status_code=400, detail="Idempotency-Key 必须与 client_capture_id 一致")
+    from .answer_sheets import parse_page_token, PAGE_TYPES
     normalized_page_token = page_token.strip()
+    card_identity = parse_page_token(normalized_page_token, settings.qr_signing_secret or settings.jwt_secret)
+    if normalized_page_token.startswith("CS1.") and card_identity is None:
+        raise HTTPException(422, "答题卡二维码签名无效，请重新下载")
     page_token_hash = hashlib.sha256(normalized_page_token.encode("utf-8")).hexdigest()
 
     session = session_or_404(db, session_id, org_id)
     ensure_session_access(session, context)
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(status_code=409, detail="Only an ACTIVE test accepts scans")
+    if session.status not in {SessionStatus.ACTIVE, SessionStatus.CLOSED}:
+        raise HTTPException(status_code=409, detail="草稿或已归档考试不能接收扫描")
     scanner_session = scanner_session_or_404(db, scan_session_id, org_id)
     if scanner_session.assessment_session_id != session.id:
         raise HTTPException(status_code=409, detail="扫描会话与测试不匹配")
@@ -1661,6 +1678,12 @@ def upload_scan(
         .options(selectinload(StudentQRCode.student))
         .where(StudentQRCode.token_hash == page_token_hash, StudentQRCode.status == QRCodeStatus.ACTIVE)
     )
+    if card_identity:
+        qr_code = db.scalar(select(StudentQRCode).options(selectinload(StudentQRCode.student)).where(StudentQRCode.id == card_identity[0], StudentQRCode.status == QRCodeStatus.ACTIVE))
+        page_type = f"{PAGE_TYPES[card_identity[1]]}:{card_identity[2]}"
+    elif page_type.startswith("A5-"):
+        destination.unlink(missing_ok=True)
+        raise HTTPException(422, "页面标识无效")
     if qr_code and qr_code.student.organization_id == org_id:
         participant = db.scalar(
             select(SessionParticipant).where(
@@ -1671,6 +1694,9 @@ def upload_scan(
         if participant is not None:
             student = qr_code.student
 
+    if card_identity and student is None:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(422, "答题卡已失效或学生不在本场考试名单中")
     scan = ScanRecord(
         id=scan_id,
         organization_id=org_id,
@@ -1838,6 +1864,7 @@ def build_results(db: Session, session: AssessmentSession) -> dict[str, Any]:
         question_stats.append(
             {
                 "question_no": question.question_no,
+                "question_type": question.question_type,
                 "correct_answer": question.answer_key.value,
                 "answered_count": answered_count,
                 "submitted_count": submitted_count,
@@ -2047,3 +2074,10 @@ def stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+from .sheet_routes import register_sheet_routes
+register_sheet_routes(app)
+
+from .review_routes import register_review_routes
+register_review_routes(app)

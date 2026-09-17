@@ -193,7 +193,7 @@ class Remote:
         if check and code != 0:
             detail = (error or output).replace(self.sudo_password, "<redacted>")
             raise RemoteError(f"Remote command failed ({code}): {command[:220]} ({detail[-1200:]})")
-        return output
+        return re.sub(r"(access_token=)[^\s\"&]+", r"\1<redacted>", output)
 
     def put_bytes(self, data: bytes, remote_path: str) -> None:
         # The server's SFTP subsystem can drop larger writes. Stream a
@@ -311,7 +311,11 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         "ALTER DATABASE classroom_assessment OWNER TO classroom_assessment;\n"
     ).encode("utf-8")
 
-    jwt_secret = secrets.token_urlsafe(48)
+    # Keep printed page identity stable across application releases.
+    old_env_text = remote.run(f"if test -f {shell(ENV_FILE)}; then cat {shell(ENV_FILE)}; fi", sudo=True)
+    old_env = dict(line.split("=", 1) for line in old_env_text.splitlines() if "=" in line and not line.startswith("#"))
+    qr_signing_secret = old_env.get("QR_SIGNING_SECRET") or secrets.token_urlsafe(48)
+    jwt_secret = old_env.get("JWT_SECRET") or secrets.token_urlsafe(48)
     seed_password = secrets.token_urlsafe(32)
     database_url = (
         "postgresql+psycopg://classroom_assessment:"
@@ -323,6 +327,9 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         f"WEB_BASE_URL=https://{host}\n"
         f"API_BASE_URL=https://{host}/api/v1\n"
         f"JWT_SECRET={jwt_secret}\n"
+        f"QR_SIGNING_SECRET={qr_signing_secret}\n"
+        "SCAN_STORAGE_DIR=/opt/classroom-assessment-platform/data/scans\n"
+        "RECOGNITION_SERVICE_URL=http://127.0.0.1:8092\n"
         "ACCESS_TOKEN_EXPIRE_MINUTES=480\n"
         "ALLOW_DEV_SUBMISSION=false\n"
         f"SEED_DEMO_PASSWORD={seed_password}\n"
@@ -382,6 +389,14 @@ def deploy_v2(remote: Remote, repo: Path, commit: str, archive: Path, archive_sh
         f"/usr/sbin/useradd --system --home-dir {shell(APP_ROOT)} --shell /usr/sbin/nologin {shell(SERVICE_USER)}; fi; "
         f"/usr/bin/install -d -m 755 -o root -g root {shell(APP_ROOT)}; "
         f"/usr/bin/install -d -m 750 -o root -g root {shell(BACKUP_ROOT)} {shell(STAGING_ROOT)} {shell(ENV_DIR)}",
+        sudo=True,
+    )
+
+    remote.run(
+        "install -d -m 750 -o classroom-assessment -g classroom-assessment /opt/classroom-assessment-platform/data/scans; "
+        "if test -d /opt/classroom-assessment-platform/current/backend/data/scans; then "
+        "cp -an /opt/classroom-assessment-platform/current/backend/data/scans/. /opt/classroom-assessment-platform/data/scans/; fi; "
+        "chown -R classroom-assessment:classroom-assessment /opt/classroom-assessment-platform/data",
         sudo=True,
     )
 

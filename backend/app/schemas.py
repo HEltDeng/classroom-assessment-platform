@@ -194,9 +194,20 @@ class ClassDetailOut(ClassOut):
 
 class AnswerKeyInput(BaseModel):
     question_no: int = Field(ge=1)
-    value: str = Field(pattern="^[ABCD]$")
+    value: str = Field(min_length=1, max_length=2000)
     points: float = Field(default=1, gt=0, le=1000)
     question_type: QuestionType = QuestionType.SINGLE_CHOICE
+
+    @model_validator(mode="after")
+    def validate_answer(self):
+        if self.question_type in {QuestionType.SINGLE_CHOICE, QuestionType.MCQ}:
+            if self.value not in "ABCD" or len(self.value) != 1:
+                raise ValueError("选择题答案必须为 A/B/C/D")
+        elif self.question_type not in {QuestionType.TEXT, QuestionType.OCR_SHORT_ANSWER, QuestionType.OCR_NUMBER}:
+            raise ValueError("当前答题卡支持单选题和文字题")
+        if not self.value.strip():
+            raise ValueError("正确答案不能为空")
+        return self
 
 
 class SessionCreate(BaseModel):
@@ -281,7 +292,7 @@ class ScanOut(BaseModel):
 
 class SubmissionAnswerInput(BaseModel):
     question_no: int = Field(ge=1)
-    value: str = Field(pattern="^[ABCD]$")
+    value: str = Field(max_length=2000)
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -343,6 +354,7 @@ class StudentLiveState(BaseModel):
 
 
 class QuestionStats(BaseModel):
+    question_type: QuestionType
     question_no: int
     correct_answer: str
     answered_count: int
