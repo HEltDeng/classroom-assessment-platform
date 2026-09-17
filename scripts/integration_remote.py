@@ -5,18 +5,25 @@ from pathlib import Path
 import tarfile
 from uuid import uuid4
 
-from deploy import Remote, shell
+from deploy import Remote, shell, check_protected_endpoints
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--action', choices=['inspect', 'deploy', 'start', 'worker', 'verify'], required=True)
+    parser.add_argument('--action', choices=['inspect', 'deploy', 'start', 'worker', 'verify', 'check'], required=True)
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--web-host')
     args = parser.parse_args()
     remote = Remote()
     try:
         print(remote.run('free -m; df -h /opt; python3 --version; systemctl is-active classroom-recognition.service || true'))
+        if args.action == 'check':
+            print(remote.run('systemctl is-active classroom-assessment-api classroom-assessment-recognition-worker classroom-recognition postgresql nginx; ss -ltnH "( sport = :8092 or sport = :8101 )"; curl -fsS http://127.0.0.1:8101/health; curl -fsS http://127.0.0.1:8101/ready; cat /opt/classroom-assessment-platform/current/RELEASE_SHA', sudo=True))
+            print(remote.run('for service in classroom-assessment-api classroom-assessment-recognition-worker classroom-recognition; do invocation=$(systemctl show "$service" -p InvocationID --value); journalctl "_SYSTEMD_INVOCATION_ID=$invocation" -p warning --no-pager -o cat; done', sudo=True))
+            print(remote.run('sha256sum /opt/classroom-assessment-platform/current/backend/app/templates/A5-*.json /opt/classroom-recognition-service/templates/A5-*.json', sudo=True))
+            check_protected_endpoints()
+            print('Final services, loopback ports, API readiness and protected endpoint checks PASS')
+            return
         if args.action == 'verify':
             target='/tmp/classroom-a5-acceptance-'+uuid4().hex
             remote.run(f'mkdir -m 700 {shell(target)}')
@@ -35,7 +42,7 @@ def main():
             return
         if args.action == 'inspect':
             print(remote.run('journalctl -u classroom-recognition.service -n 18 --no-pager -o cat', sudo=True, check=False))
-            print(remote.run('tail -n 4 /opt/classroom-recognition-service/install.log; /opt/classroom-recognition-service/.venv/bin/pip show paddleocr paddlepaddle | head -n 18', sudo=True, check=False))
+            print(remote.run('tail -n 2 /opt/classroom-recognition-service/install.log; /opt/classroom-recognition-service/.venv/bin/pip check', sudo=True, check=False))
             return
         source = args.repo.parent / '005_ClassroomRecognitionService-课堂答题识别服务'
         archive = io.BytesIO()

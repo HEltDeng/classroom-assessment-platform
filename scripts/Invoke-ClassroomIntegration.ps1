@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("Inspect", "Deploy", "Start", "Worker", "Verify")]
+    [ValidateSet("Inspect", "Deploy", "Start", "Worker", "Verify", "Check")]
     [string]$Action = "Inspect",
     [string]$RepoRoot = "",
     [string]$WebHost = "assessment.mychangliapp.cn"
