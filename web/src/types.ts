@@ -103,6 +103,9 @@ export interface AssessmentSession {
   created_at: string
   started_at: string | null
   ended_at: string | null
+  day_of_week?: number | null
+  time_slot_code?: string | null
+  time_slot_name?: string | null
   questions: Question[]
 }
 

@@ -163,6 +163,64 @@ a { color: inherit; text-decoration: none; }
   .settings-catalog-grid { grid-template-columns: 1fr; }.settings-slot-card { grid-column: auto; }.settings-inline-form { align-items: stretch; flex-direction: column; }.settings-inline-form .button { width: 100%; }.settings-row { align-items: flex-start; }.settings-slot-form .form-actions { grid-column: 1 / -1; }.settings-slot-form .form-actions .button { width: 100%; }
 }
 .student-row-status { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+
+/* Focused visual treatment for the student library, exam history and settings pages. */
+.student-table-head, .student-table-row { grid-template-columns: minmax(250px, 1.45fr) minmax(145px, .9fr) minmax(100px, .65fr) minmax(120px, .8fr) minmax(145px, .95fr); gap: 20px; }
+.student-table-head { text-transform: none; letter-spacing: .02em; font-size: 11px; font-weight: 650; padding: 0 13px 12px; }
+.student-table-row { min-height: 57px; padding: 8px 13px; }
+.student-identity { gap: 12px; }
+.student-identity > div { min-width: 0; }
+.student-identity .text-button { margin: 0; padding: 0; color: var(--ink); font-size: 12px; font-weight: 650; text-align: left; }
+.student-identity .text-button:hover { color: var(--teal); text-decoration: none; }
+.student-location { color: var(--ink); }
+.student-row-status { justify-content: flex-start; gap: 16px; }
+.student-row-status .row-action { padding: 0; }
+
+.session-history { display: grid; gap: 16px; padding: 27px 25px; }
+.history-head { display: none; }
+.history-row { min-height: 128px; padding: 25px 28px 22px; border: 1px solid var(--line); border-radius: 13px; background: #fff; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 26px; }
+.history-main { min-width: 0; display: grid; gap: 14px; }
+.history-main > strong { color: var(--ink); font-size: 22px; line-height: 1.15; letter-spacing: -.045em; }
+.history-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; color: #435d66; font-size: 15px; }
+.exam-type-pill { display: inline-flex; align-items: center; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 750; white-space: nowrap; }
+.exam-type-entry { color: #1b8a65; background: #e3f7ec; }
+.exam-type-exit { color: #d7473d; background: #ffe6e4; }
+.exam-type-in_class { color: #2c75c8; background: #e4efff; }
+.exam-type-custom { color: #886b2d; background: #fff3d8; }
+.history-divider { width: 1px; height: 19px; background: #d5e1df; }
+.history-score { color: #304958; font-weight: 650; white-space: nowrap; }
+.history-question-summary { color: #516875; white-space: nowrap; }
+.history-time { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 13px; }
+.history-time span { color: #708a91; font-size: 19px; line-height: 1; }
+.history-result-link { align-self: center; color: var(--teal); font-size: 15px; font-weight: 750; white-space: nowrap; }
+.history-result-link span { margin-left: 7px; font-size: 21px; vertical-align: -1px; }
+.history-result-link:hover { color: var(--teal-dark); }
+
+.settings-profile-panel .panel-heading { margin-bottom: 25px; }
+.settings-prefix-form { display: flex; align-items: flex-end; gap: 14px; }
+.settings-prefix-form label { display: grid; flex: 1; gap: 7px; font-size: 11px; font-weight: 750; color: var(--ink); }
+.settings-prefix-form input { width: 100%; border: 1px solid #dbe8e5; border-radius: 8px; background: #fbfdfd; color: var(--ink); padding: 13px 12px; outline: none; font-size: 13px; font-weight: 500; }
+.settings-prefix-form input:focus { border-color: #62b7ab; box-shadow: 0 0 0 3px rgba(98,183,171,.12); }
+.settings-prefix-form .button { min-width: 112px; min-height: 45px; }
+.settings-catalog-grid-stacked { grid-template-columns: 1fr; }
+.settings-catalog-grid-stacked .settings-slot-card { grid-column: auto; }
+.settings-catalog-grid-stacked .settings-catalog-card { padding: 20px; }
+.settings-catalog-grid-stacked .settings-row { min-height: 48px; padding: 11px 13px; }
+.settings-catalog-grid-stacked .status-toggle-active { color: var(--teal); }
+
+@media (max-width: 900px) {
+  .history-row { padding: 22px 20px; }
+  .history-meta { gap: 12px; font-size: 13px; }
+  .history-main > strong { font-size: 19px; }
+}
+
+@media (max-width: 760px) {
+  .student-table-head, .student-table-row { min-width: 720px; grid-template-columns: 1.4fr 1fr .7fr .85fr 1fr; }
+  .history-row { grid-template-columns: 1fr; gap: 17px; }
+  .history-result-link { justify-self: end; }
+  .settings-prefix-form { align-items: stretch; flex-direction: column; }
+  .settings-prefix-form .button { width: 100%; }
+}
 .status-badge-inactive { color: #8a6b49; background: #f8f0e8; }
 
 /* Product acceptance pass: reduce the shell to the tenant and the work. */

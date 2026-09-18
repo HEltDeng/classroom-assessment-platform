@@ -443,6 +443,9 @@ def session_out(session: AssessmentSession) -> dict[str, Any]:
         "created_at": session.created_at,
         "started_at": session.started_at,
         "ended_at": session.ended_at,
+        "day_of_week": session.class_model.day_of_week,
+        "time_slot_code": session.class_model.time_slot.slot_code if session.class_model.time_slot else None,
+        "time_slot_name": session.class_model.time_slot.display_name if session.class_model.time_slot else None,
         "questions": [
             {
                 "id": question.id,

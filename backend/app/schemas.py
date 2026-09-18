@@ -249,6 +249,9 @@ class SessionOut(APIModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
+    day_of_week: int | None = None
+    time_slot_code: str | None = None
+    time_slot_name: str | None = None
     questions: list[QuestionOut] = Field(default_factory=list)
 
 
